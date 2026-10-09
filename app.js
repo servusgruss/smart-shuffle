@@ -99,8 +99,13 @@ async function login() {
   if (!id) { toast('Bitte zuerst die Client ID eintragen.', true); return; }
   if (store.get('clientId') && store.get('clientId') !== id) store.del('token'); // andere Spotify-App → alter Login gilt nicht
   store.set('clientId', id);
-  const verifier = randomString(64), state = randomString(16);
+  const verifier = randomString(64);
+  /* Auf dem iPhone-Home-Bildschirm landet die Rückkehr von Spotify oft in einem Browserfenster mit
+   * eigenem Speicher. Damit der Login dort trotzdem abgeschlossen werden kann, reisen Prüfschlüssel,
+   * Client ID und Herkunft im state-Parameter mit; die Übergabe an die App läuft dann per Code. */
+  const state = [randomString(16), verifier, isStandalone() ? 'p' : 'b', id].join('~');
   store.set('pkce', { verifier, state });
+  if (isStandalone()) store.set('loginPending', Date.now());
   location.href = 'https://accounts.spotify.com/authorize?' + new URLSearchParams({
     client_id: id, response_type: 'code', redirect_uri: REDIRECT_URI,
     code_challenge_method: 'S256', code_challenge: await sha256base64url(verifier),
@@ -134,18 +139,78 @@ async function handleRedirect() {
   if (!q.has('code') && !q.has('error')) return;
   history.replaceState(null, '', REDIRECT_URI);
   if (q.has('error')) { check('auth', 'fail', 'Spotify meldet: ' + q.get('error')); return; }
+  const state = q.get('state') || '';
+  const [, verifierFromState, origin, idFromState] = state.split('~');
   const pkce = store.get('pkce');
-  if (!pkce || pkce.state !== q.get('state')) { check('auth', 'fail', 'Login-Status passt nicht, bitte neu anmelden.'); return; }
+  const verifier = pkce && pkce.state === state ? pkce.verifier : verifierFromState;
+  if (!verifier) { check('auth', 'fail', 'Login-Status passt nicht, bitte neu anmelden.'); return; }
+  if (idFromState && !clientId()) store.set('clientId', idFromState);
   try {
     await tokenRequest({
       grant_type: 'authorization_code', code: q.get('code'), redirect_uri: REDIRECT_URI,
-      client_id: clientId(), code_verifier: pkce.verifier,
+      client_id: idFromState || clientId(), code_verifier: verifier,
     });
     store.del('pkce');
+    store.del('loginPending');
     log('Login erfolgreich.');
+    // Gestartet in der Home-Bildschirm-App, gelandet im Browser → Login an die App übergeben
+    if (origin === 'p' && !isStandalone()) { showHandoff(idFromState || clientId()); return 'handoff'; }
   } catch (e) {
     check('auth', 'fail', e.message);
   }
+}
+
+/* ---------- Übergabe Browser → Home-Bildschirm-App ---------- */
+function isStandalone() {
+  return navigator.standalone === true || window.matchMedia?.('(display-mode: standalone)').matches;
+}
+const b64url = (str) => btoa(unescape(encodeURIComponent(str))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const fromB64url = (str) => decodeURIComponent(escape(atob(str.replace(/-/g, '+').replace(/_/g, '/'))));
+function showHandoff(id) {
+  const t = store.get('token');
+  if (!t?.refresh) return;
+  const code = 'SS1.' + b64url(JSON.stringify({ r: t.refresh, s: t.scope, c: id }));
+  $('handoffNote').textContent = '';
+  $('copyCodeBtn').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      store.del('token');                       // der Login gehört jetzt der Home-Bildschirm-App
+      $('handoffNote').textContent = 'Kopiert. Jetzt zur App auf dem Home-Bildschirm wechseln und „Login-Code einfügen“ tippen.';
+      $('copyCodeBtn').disabled = true;
+    } catch {
+      $('handoffNote').textContent = 'Kopieren nicht erlaubt – Code markieren und manuell kopieren:';
+      $('handoffCode').hidden = false;
+      $('handoffCode').value = code;
+      $('handoffCode').select();
+    }
+  };
+  $('handoff').showModal();
+}
+async function acceptLoginCode(raw) {
+  const code = String(raw || '').trim();
+  if (!code.startsWith('SS1.')) { toast('Das ist kein Login-Code von Smart Shuffle.', true); return; }
+  try {
+    const data = JSON.parse(fromB64url(code.slice(4)));
+    if (data.c) { store.set('clientId', data.c); $('clientId').value = data.c; }
+    store.set('token', { access: '', refresh: data.r, scope: data.s || '', expires: 0 });
+    await getAccessToken();                      // tauscht den Code gegen einen frischen Zugang
+    store.del('loginPending');
+    $('pasteField').value = '';
+    $('pasteLogin').hidden = true;
+    toast('Angemeldet.');
+    if (await loadProfile()) { await syncLibrary(false); }
+  } catch (e) {
+    store.del('token');
+    toast('Login-Code ungültig oder abgelaufen – bitte neu anmelden.', true);
+    log('Login-Code: ' + e.message);
+  }
+}
+async function pasteLoginCode() {
+  try { await acceptLoginCode(await navigator.clipboard.readText()); }
+  catch { toast('Einfügen nicht erlaubt – Code ins Feld darunter einfügen.', true); $('pasteField').focus(); }
+}
+function updatePasteLogin() {
+  $('pasteLogin').hidden = !(isStandalone() && !store.get('token'));
 }
 let refreshing = null;
 async function getAccessToken() {
@@ -729,6 +794,7 @@ function setupSpeech() {
 /* ---------- Ansichten ---------- */
 function showLoggedOut(msg) {
   me = null;
+  updatePasteLogin();
   $('logoutBtn').hidden = true;
   $('loginBtn').textContent = 'Mit Spotify anmelden';
   $('playBtn').disabled = true;
@@ -787,6 +853,16 @@ async function init() {
   $('deviceBtn').addEventListener('click', async () => { try { await resolveDevice(true); } catch (e) { toast(e.message, true); } });
   renderDevice();
   $('deviceClose').addEventListener('click', () => $('devicePicker').close());
+  $('pasteBtn').addEventListener('click', pasteLoginCode);
+  $('pasteField').addEventListener('input', () => { if ($('pasteField').value.trim().startsWith('SS1.')) acceptLoginCode($('pasteField').value); });
+  $('handoffClose').addEventListener('click', () => $('handoff').close());
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && store.get('loginPending') && !store.get('token')) {
+      updatePasteLogin();
+      if (!$('settings').open) $('settings').showModal();
+      toast('Zurück von Spotify? Tippe in den Einstellungen auf „Login-Code einfügen“.');
+    }
+  });
   document.querySelector('.chips').addEventListener('click', (e) => {
     const b = e.target.closest('.chip');
     if (!b) return;
@@ -804,7 +880,7 @@ async function init() {
   $('query').addEventListener('blur', () => { clearTimeout(typing); if ($('query').value.trim() !== settings.query || !settings.ki) commitQuery(); });
   setupSpeech();
 
-  await handleRedirect();
+  if (await handleRedirect() === 'handoff') return;   // nur Übergabe anzeigen, hier nichts laden
   loadCachedLibrary();
   if (tracks.length) makeShuffle(); else renderQueue();
 

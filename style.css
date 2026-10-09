@@ -211,3 +211,10 @@ code.copy {
 .device-list .t { font-weight: 600; }
 .device-list .t small { color: var(--accent); font-weight: 600; margin-left: 6px; }
 .device-list .a { color: var(--muted); font-size: 14px; }
+
+/* Login-Übergabe */
+.paste-login { margin-top: 14px; padding-top: 4px; border-top: 1px solid var(--line); }
+.paste-login input { margin-top: 10px; }
+.sheet .steps { padding-left: 22px; margin: 8px 0 4px; }
+.sheet .steps li { padding: 4px 0; }
+#handoffCode { width: 100%; font-size: 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }

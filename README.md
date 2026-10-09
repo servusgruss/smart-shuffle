@@ -25,7 +25,9 @@ App: `https://servusgruss.github.io/smart-shuffle/`
   eigenen Cloudflare Worker mit Claude – Einrichtung in [`worker/README.md`](worker/README.md).
   Ohne KI läuft die Erkennung komplett auf dem Gerät.
 - **5 Designs** (Einstellungen → Design): Grün (Spotify-Stil), Weiß, Schwarz, Nebel, Vinyl
-- **Als App auf den Home-Bildschirm** legbar (eigenes Icon, Vollbild)
+- **Als App auf den Home-Bildschirm** legbar (eigenes Icon, Vollbild). iOS gibt Home-Bildschirm-Apps
+  einen eigenen Speicher, getrennt von Safari; landet die Spotify-Anmeldung im Browser, übergibt
+  „Code kopieren“ → „Login-Code einfügen“ den Login an die App.
 
 ## Einrichtung
 1. **GitHub Pages:** Repo → Settings → Pages → *Deploy from a branch* → `main` / `(root)`

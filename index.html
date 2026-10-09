@@ -89,6 +89,11 @@
       <button id="loginBtn" class="primary">Mit Spotify anmelden</button>
       <button id="logoutBtn" hidden>Abmelden</button>
     </div>
+    <div id="pasteLogin" class="paste-login" hidden>
+      <p class="hint">Auf dem Home-Bildschirm öffnet sich die Spotify-Anmeldung in einem eigenen Fenster. Dort nach dem Anmelden „Code kopieren“ tippen, zurückkommen und hier einfügen.</p>
+      <div class="row"><button id="pasteBtn" class="primary">Login-Code einfügen</button></div>
+      <input id="pasteField" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="oder Code hier hineinkopieren">
+    </div>
 
     <h3>KI</h3>
     <label for="kiUrl">Adresse des KI-Servers</label>
@@ -133,6 +138,25 @@
     <p id="deviceNote" class="hint"></p>
     <ul id="deviceList" class="device-list"></ul>
     <div class="row"><button id="deviceRefresh">Neu suchen</button></div>
+  </dialog>
+
+  <!-- Übergabe des Logins an die Home-Bildschirm-App -->
+  <dialog id="handoff" class="sheet">
+    <div class="sheet-head">
+      <h2>Angemeldet</h2>
+      <button id="handoffClose" class="icon-btn" aria-label="Schließen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <p>Du hast Smart Shuffle vom Home-Bildschirm gestartet. iOS gibt den Login nicht automatisch dorthin weiter, deshalb:</p>
+    <ol class="steps">
+      <li>„Code kopieren“ tippen</li>
+      <li>dieses Fenster schließen und zur App auf dem Home-Bildschirm wechseln</li>
+      <li>dort „Login-Code einfügen“ tippen</li>
+    </ol>
+    <div class="row"><button id="copyCodeBtn" class="primary">Code kopieren</button></div>
+    <p id="handoffNote" class="hint"></p>
+    <textarea id="handoffCode" rows="3" readonly hidden></textarea>
   </dialog>
 
   <script src="config.js"></script>
