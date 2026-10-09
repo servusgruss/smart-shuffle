@@ -242,7 +242,7 @@ const hasScope = (s) => (store.get('token')?.scope || '').split(' ').includes(s)
 /* Persönliche Daten der angemeldeten Person vom Gerät entfernen.
  * Client ID und Design bleiben, Genres auch (die gehören zu Interpreten, nicht zu Personen). */
 function clearUserData() {
-  Object.keys(SOURCES).forEach((s) => store.del('lib:' + s));
+  Object.keys(SOURCES).forEach((s) => { store.del('lib:' + s); store.del('partial:' + s); });
   store.del('playlistId');
   store.del('me');
   settings.query = '';
@@ -266,11 +266,20 @@ async function api(path, opts = {}, attempt = 0) {
     ...opts,
     headers: { Authorization: 'Bearer ' + (await getAccessToken()), 'Content-Type': 'application/json', ...(opts.headers || {}) },
   });
-  if (res.status === 429 && attempt < 4) {
-    const wait = Math.min(30, Number(res.headers.get('Retry-After') || 2));
-    log(`Spotify bremst, warte ${wait}s …`);
-    await sleep(wait * 1000);
-    return api(path, opts, attempt + 1);
+  if (res.status === 429) {
+    // Kurze Bremse: abwarten und wiederholen. Lange Bremse: abbrechen und sagen, wann es weitergeht.
+    const raw = res.headers.get('Retry-After');
+    const retryAfter = raw ? Number(raw) : null;
+    const wait = retryAfter ?? [5, 10, 20][attempt];
+    if (attempt < 3 && wait !== undefined && wait <= 30) {
+      log(`Spotify bremst, warte ${wait}s …`);
+      await sleep(wait * 1000);
+      return api(path, opts, attempt + 1);
+    }
+    const err = new Error('Spotify bremst gerade zu viele Anfragen');
+    err.status = 429;
+    err.retryAfter = retryAfter;
+    throw err;
   }
   if (res.status === 401 && attempt === 0) {           // Token serverseitig ungültig → einmal erneuern
     const t = store.get('token'); if (t) { t.expires = 0; store.set('token', t); }
@@ -326,15 +335,22 @@ const SOURCES = {
         if (found && merged.length === total) return { tracks: merged, added: fresh.length };
         log('Bibliothek hat sich stärker geändert, lade komplett neu.');
       }
-      const tracks = [];
-      let offset = 0;
-      for (;;) {
-        const page = await api(`/me/tracks?limit=50&offset=${offset}`);
+      // Komplett laden – mit Zwischenständen, damit ein Abbruch (z. B. Spotify-Bremse) nicht von vorn beginnt
+      const partial = store.get('partial:liked');
+      const tracks = partial?.tracks ? partial.tracks.map(unpack) : [];
+      let offset = partial?.offset || 0;
+      if (offset) log(`Setze das Laden bei Song ${offset} fort.`);
+      for (let pages = 1; ; pages++) {
+        let page;
+        try { page = await api(`/me/tracks?limit=50&offset=${offset}`); }
+        catch (e) { if (offset) store.set('partial:liked', { tracks: tracks.map(pack), offset }); throw e; }
         for (const it of page.items) { const t = fromSaved(it); if (t) tracks.push(t); }
-        progress(`${tracks.length} von ${page.total} Songs …`);
-        if (!page.next) break;
+        progress(`${tracks.length.toLocaleString('de-DE')} von ${page.total.toLocaleString('de-DE')} Songs geladen …`);
         offset += 50;
+        if (!page.next) break;
+        if (pages % 5 === 0) store.set('partial:liked', { tracks: tracks.map(pack), offset });
       }
+      store.del('partial:liked');
       return { tracks, added: tracks.length, full: true };
     },
   },
@@ -354,7 +370,7 @@ function setLibStatus() {
   if (!store.get('token')) { $('libStatus').textContent = 'Nicht verbunden'; return; }
   $('libStatus').textContent = tracks.length
     ? `${src.label} · ${tracks.length.toLocaleString('de-DE')} Songs`
-    : 'Bibliothek wird geladen …';
+    : libError ? libError.message : 'Bibliothek wird geladen …';
   $('libInfo').textContent = lib?.syncedAt
     ? `${tracks.length} Songs gespeichert, zuletzt abgeglichen ${new Date(lib.syncedAt).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })}.`
     : 'Noch nichts geladen.';
@@ -368,9 +384,14 @@ function loadCachedLibrary() {
   setLibStatus();
 }
 
+let libError = null, retryTimer = null;
+const minutes = (sec) => Math.max(1, Math.round(sec / 60));
 async function syncLibrary(full = false) {
   if (syncing) return;
   syncing = true;
+  libError = null;
+  clearTimeout(retryTimer);
+  if (full) store.del('partial:liked');
   $('reloadBtn').disabled = true;
   check('tracks', 'wait', full ? 'lade komplett …' : 'gleiche ab …');
   try {
@@ -387,8 +408,19 @@ async function syncLibrary(full = false) {
     makeShuffle();
     loadGenres();
   } catch (e) {
-    check('tracks', 'fail', e.message);
-    if (!tracks.length) toast('Songs konnten nicht geladen werden: ' + e.message, true);
+    libError = e;
+    const loaded = store.get('partial:liked')?.offset || 0;
+    if (e.status === 429) {
+      // automatisch weitermachen, solange die App offen ist
+      const sec = Math.min(e.retryAfter || 120, 1800);
+      retryTimer = setTimeout(() => syncLibrary(), sec * 1000);
+      libError.message = `Spotify bremst – ${loaded ? loaded.toLocaleString('de-DE') + ' Songs geladen, ' : ''}geht in ca. ${minutes(sec)} Min. automatisch weiter`;
+      check('tracks', 'wait', libError.message);
+      log(libError.message + (e.retryAfter ? ` (Spotify: ${e.retryAfter}s)` : ''));
+    } else {
+      check('tracks', 'fail', e.message);
+      if (!tracks.length) toast('Songs konnten nicht geladen werden: ' + e.message, true);
+    }
   } finally {
     syncing = false;
     $('reloadBtn').disabled = false;
@@ -834,6 +866,8 @@ async function loadProfile() {
     return true;
   } catch (e) {
     check('profile', 'fail', e.message);
+    libError = new Error('Spotify-Profil nicht abrufbar: ' + e.message);
+    setLibStatus();
     if (e.status === 403) log('403: Steht dein Konto im Spotify-Dashboard unter „User Management“?');
     return false;
   }
@@ -869,6 +903,7 @@ async function init() {
   $('pasteField').addEventListener('input', () => { if ($('pasteField').value.trim().startsWith('SS1.')) acceptLoginCode($('pasteField').value); });
   $('handoffClose').addEventListener('click', () => $('handoff').close());
   document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && libError?.status === 429 && !syncing) syncLibrary();
     if (document.visibilityState === 'visible' && store.get('loginPending') && !store.get('token')) {
       updatePasteLogin();
       if (!$('settings').open) $('settings').showModal();
