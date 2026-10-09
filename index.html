@@ -57,6 +57,7 @@
       </button>
       <button id="playBtn" class="primary" disabled>Abspielen</button>
     </section>
+    <button id="deviceBtn" class="device-btn">Gerät wählen</button>
     <p id="toast" class="toast" role="status" aria-live="polite"></p>
 
     <section class="queue">
@@ -119,6 +120,19 @@
 
     <h3>Protokoll</h3>
     <pre id="log" class="log"></pre>
+  </dialog>
+
+  <!-- Geräteauswahl -->
+  <dialog id="devicePicker" class="sheet">
+    <div class="sheet-head">
+      <h2>Abspielen auf</h2>
+      <button id="deviceClose" class="icon-btn" aria-label="Schließen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <p id="deviceNote" class="hint"></p>
+    <ul id="deviceList" class="device-list"></ul>
+    <div class="row"><button id="deviceRefresh">Neu suchen</button></div>
   </dialog>
 
   <script src="config.js"></script>

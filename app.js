@@ -535,19 +535,65 @@ async function fillPlaylist(id, uris) {
     await api(`/playlists/${id}/items`, { method: i === 0 ? 'PUT' : 'POST', body: JSON.stringify({ uris: chunk }) });
   }
 }
-async function play() {
+const DEVICE_TYPES = { Smartphone: 'Handy', Computer: 'Computer', TV: 'Fernseher', Speaker: 'Lautsprecher', Tablet: 'Tablet', CastVideo: 'Chromecast', CastAudio: 'Chromecast Audio', AVR: 'Receiver', STB: 'TV-Box', GameConsole: 'Konsole', Automobile: 'Auto' };
+const deviceLabel = (d) => `${d.name} · ${DEVICE_TYPES[d.type] || d.type}`;
+
+/* Geräteauswahl: zeigt alle Spotify-Geräte; gesperrte (z. B. manche Fernseher) sind nicht wählbar. */
+function chooseDevice(devices, note = '') {
+  return new Promise((resolve) => {
+    const dlg = $('devicePicker');
+    $('deviceNote').textContent = note;
+    $('deviceList').innerHTML = devices.length ? devices.map((d, i) => `
+      <li><button data-i="${i}" ${d.is_restricted ? 'disabled' : ''}>
+        <span class="t">${escapeHtml(d.name)}${d.is_active ? ' <small>spielt gerade</small>' : ''}</span>
+        <span class="a">${escapeHtml(DEVICE_TYPES[d.type] || d.type)}${d.is_restricted ? ' – lässt sich nicht fernsteuern' : ''}</span>
+      </button></li>`).join('')
+      : '<li class="hint">Kein Gerät gefunden. Öffne Spotify auf dem Gerät, auf dem es laufen soll, und tippe auf „Neu suchen“.</li>';
+    let picked = null;
+    $('deviceList').onclick = (e) => {
+      const b = e.target.closest('button[data-i]');
+      if (!b) return;
+      picked = devices[Number(b.dataset.i)];
+      dlg.close();
+    };
+    $('deviceRefresh').onclick = async () => {
+      picked = undefined;                // Schließen hier ist kein Abbruch
+      dlg.close();
+      try { resolve(await chooseDevice((await api('/me/player/devices')).devices, note)); } catch { resolve(null); }
+    };
+    dlg.onclose = () => { if (picked !== undefined) resolve(picked); };
+    dlg.showModal();
+  });
+}
+
+/* Gerät bestimmen: gemerktes Gerät → einziges steuerbares Gerät → sonst fragen. */
+async function resolveDevice(forceAsk = false, note = '') {
+  const { devices } = await api('/me/player/devices');
+  const usable = devices.filter((d) => d.id && !d.is_restricted);
+  const saved = store.get('device');
+  let device = null;
+  if (!forceAsk) {
+    device = usable.find((d) => saved && (d.id === saved.id || d.name === saved.name))
+      || (usable.length === 1 ? usable[0] : null);
+  }
+  if (!device) device = await chooseDevice(devices, note);
+  if (device) { store.set('device', { id: device.id, name: device.name, type: device.type }); renderDevice(); }
+  return device;
+}
+function renderDevice() {
+  const d = store.get('device');
+  $('deviceBtn').textContent = d ? `Abspielen auf: ${d.name}` : 'Gerät wählen';
+}
+
+async function play(forceAsk = false, note = '') {
   if (!queue.length) return;
   $('playBtn').disabled = true;
   check('devices', 'wait');
+  let device = null;
   try {
-    const { devices } = await api('/me/player/devices');
-    if (!devices.length) {
-      check('devices', 'fail', 'Kein Gerät gefunden');
-      toast('Öffne kurz die Spotify-App, dann nochmal abspielen.', true);
-      return;
-    }
-    const device = devices.find((d) => d.is_active) || devices.find((d) => d.type === 'Smartphone') || devices[0];
-    check('devices', 'ok', `${device.name} (${device.type})`);
+    device = await resolveDevice(forceAsk, note);
+    if (!device) { check('devices', 'fail', 'Kein Gerät gewählt'); return; }
+    check('devices', 'ok', deviceLabel(device));
     check('play', 'wait');
     const dev = `device_id=${encodeURIComponent(device.id)}`;
     const uris = queue.map((t) => t.uri);
@@ -566,9 +612,17 @@ async function play() {
     check('play', 'ok', `${queue.length} Songs auf ${device.name}`);
     toast(`Läuft auf ${device.name}: ${queue[0].name}`);
   } catch (e) {
-    const hint = e.status === 403 ? ' Premium nötig?' : e.status === 404 ? ' Spotify-App kurz öffnen.' : '';
-    check('play', 'fail', e.message + hint);
-    toast('Abspielen fehlgeschlagen: ' + e.message + hint, true);
+    const restricted = /restriction/i.test(e.message);
+    const hint = restricted ? `${device?.name || 'Dieses Gerät'} lässt sich nicht von außen steuern.`
+      : e.status === 404 ? 'Gerät nicht erreichbar – Spotify dort kurz öffnen.'
+      : e.status === 403 ? 'Spotify verweigert die Steuerung (Premium aktiv?).' : '';
+    check('play', 'fail', e.message + (hint ? ' – ' + hint : ''));
+    if ((restricted || e.status === 404) && !forceAsk) {
+      store.del('device'); renderDevice();
+      $('playBtn').disabled = false;
+      return play(true, hint + ' Bitte ein anderes Gerät wählen.');
+    }
+    toast('Abspielen fehlgeschlagen: ' + (hint || e.message), true);
   } finally {
     $('playBtn').disabled = !queue.length;
   }
@@ -669,7 +723,10 @@ async function init() {
   $('closeSettings').addEventListener('click', () => $('settings').close());
   $('settings').addEventListener('click', (e) => { if (e.target === $('settings')) $('settings').close(); });
   $('shuffleBtn').addEventListener('click', makeShuffle);
-  $('playBtn').addEventListener('click', play);
+  $('playBtn').addEventListener('click', () => play());
+  $('deviceBtn').addEventListener('click', async () => { try { await resolveDevice(true); } catch (e) { toast(e.message, true); } });
+  renderDevice();
+  $('deviceClose').addEventListener('click', () => $('devicePicker').close());
   document.querySelector('.chips').addEventListener('click', (e) => {
     const b = e.target.closest('.chip');
     if (!b) return;

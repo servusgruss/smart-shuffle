@@ -196,3 +196,18 @@ code.copy {
 .checks li.wait::before { content: "…"; color: var(--muted); }
 .checks li small { color: var(--muted); display: block; font-size: 13px; }
 .log { margin: 0; font-size: 12px; white-space: pre-wrap; word-break: break-word; color: var(--muted); max-height: 180px; overflow-y: auto; }
+
+/* Geräte */
+.device-btn {
+  display: block; margin: 10px auto 0; border: 0; background: transparent; cursor: pointer;
+  color: var(--muted); font-size: 14px; text-decoration: underline; text-underline-offset: 3px;
+}
+.device-list { list-style: none; margin: 0; padding: 0; }
+.device-list button {
+  width: 100%; text-align: left; display: grid; gap: 2px; cursor: pointer;
+  border: 0; border-bottom: 1px solid var(--line); background: transparent; padding: 14px 2px;
+}
+.device-list button:disabled { opacity: .45; cursor: default; }
+.device-list .t { font-weight: 600; }
+.device-list .t small { color: var(--accent); font-weight: 600; margin-left: 6px; }
+.device-list .a { color: var(--muted); font-size: 14px; }
