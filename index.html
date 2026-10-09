@@ -61,7 +61,10 @@
     <p id="toast" class="toast" role="status" aria-live="polite"></p>
 
     <section class="queue">
-      <h2>Reihenfolge <span id="count"></span></h2>
+      <div class="queue-head">
+        <h2>Reihenfolge <span id="count"></span></h2>
+        <button id="discoverBtn" class="link-btn" hidden>Neue Vorschläge</button>
+      </div>
       <ol id="list" class="list"></ol>
       <p id="empty" class="empty">Verbinde Spotify in den Einstellungen, dann erscheinen hier deine Songs.</p>
     </section>
@@ -105,6 +108,15 @@
       <button id="kiTestBtn">Verbindung testen</button>
     </div>
 
+    <h3>Neues entdecken</h3>
+    <label for="discoverCount">Neue Songs pro Mix: <b id="discoverCountLabel"></b></label>
+    <input id="discoverCount" type="range" min="0" max="50" step="5">
+    <p id="discoverCountHint" class="hint"></p>
+    <label for="kiShare">Herkunft der Vorschläge: <b id="kiShareLabel"></b></label>
+    <input id="kiShare" type="range" min="0" max="100" step="10">
+    <div class="range-ends"><span>nur Last.fm</span><span>nur KI</span></div>
+    <p id="discoverNote" class="hint"></p>
+
     <h3>Bibliothek</h3>
     <p id="libInfo" class="hint">Noch nichts geladen.</p>
     <div class="row">
@@ -119,6 +131,7 @@
       <li data-check="genres">Genres der Interpreten</li>
       <li data-check="speech">Spracheingabe</li>
       <li data-check="ki">KI-Server</li>
+      <li data-check="discover">Neue Songs</li>
       <li data-check="devices">Spotify-Gerät</li>
       <li data-check="play">Wiedergabe</li>
     </ul>

@@ -218,3 +218,23 @@ code.copy {
 .sheet .steps { padding-left: 22px; margin: 8px 0 4px; }
 .sheet .steps li { padding: 4px 0; }
 #handoffCode { width: 100%; font-size: 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+
+/* Neues entdecken */
+.queue-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.link-btn { border: 0; background: transparent; color: var(--accent); font-weight: 600; font-size: 14px; cursor: pointer; padding: 4px 0; }
+[data-theme="weiss"] .link-btn, [data-theme="schwarz"] .link-btn { text-decoration: underline; text-underline-offset: 3px; }
+.link-btn:disabled { opacity: .4; }
+.list li.is-new { grid-template-columns: 28px 1fr auto; }
+.list li.is-new .a { grid-column: 2; }
+.list .new {
+  display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: var(--radius); vertical-align: 2px;
+  font-size: 11px; font-weight: 700; background: var(--accent); color: var(--on-accent);
+}
+.heart {
+  grid-row: span 2; align-self: center; border: 0; background: transparent; cursor: pointer;
+  font-size: 22px; line-height: 1; color: var(--muted); padding: 4px 6px;
+}
+.heart.on { color: var(--accent); }
+.sheet input[type=range] { width: 100%; accent-color: var(--accent); margin: 4px 0 0; }
+.sheet label b { color: var(--ink); font-weight: 600; }
+.range-ends { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 2px; }

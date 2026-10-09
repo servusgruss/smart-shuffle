@@ -12,7 +12,9 @@ const SCOPES = [
   'user-modify-playback-state', // Wiedergabe starten
   'playlist-read-private',      // eigene Shuffle-Playlist prüfen
   'playlist-modify-private',    // Shuffle-Reihenfolge in eigene private Playlist schreiben
+  'user-library-modify',        // entdeckte Songs per Herz speichern
 ];
+const OPTIONAL_SCOPES = ['user-library-modify'];   // fehlt es, funktioniert alles außer dem Herz
 const REDIRECT_URI = location.origin + location.pathname;
 const API = 'https://api.spotify.com/v1';
 const PLAYLIST_NAME = 'Smart Shuffle';
@@ -35,7 +37,11 @@ const store = {
   },
   del(k) { try { localStorage.removeItem('ss:' + k); } catch {} },
 };
-const settings = Object.assign({ theme: 'gruen', count: '100', source: 'liked', query: '' }, store.get('settings') || {});
+const settings = Object.assign({
+  theme: 'gruen', count: '100', source: 'liked', query: '',
+  discoverCount: 10,   // neue Songs pro Mix = höchstens so viele Spotify-Suchen; 0 = aus
+  kiShare: 50,         // Herkunft der Vorschläge: 0 = nur Last.fm, 100 = nur KI
+}, store.get('settings') || {});
 const saveSettings = () => store.set('settings', settings);
 
 /* ---------- Rückmeldungen ---------- */
@@ -602,6 +608,143 @@ async function commitQuery() {
   saveSettings();
   makeShuffle();                       // sofort: Vorschau mit der Erkennung auf dem Gerät
   if (text && await interpretWithKi(text)) makeShuffle();
+  if (await discoverNew()) makeShuffle();
+}
+
+/* ---------- Neues entdecken ----------
+ * Der Worker liefert Kandidaten von Last.fm (ähnliche Songs aus Hördaten) und/oder Claude.
+ * Jeder noch unbekannte Kandidat kostet genau eine Spotify-Suche; das Budget pro Mix ist die
+ * eingestellte Anzahl. Gefundene (und nicht gefundene) Songs werden gemerkt und nie zweimal gesucht.
+ */
+const keyOf = (artist, title) => Matcher.normalize(artist) + '|' + Matcher.normalize(String(title)
+  .replace(/\s*[([].*?[)\]]/g, '').replace(/\s+-\s+.*$/, ''));
+let discovering = false;
+function discoverySig() { return $('query').value.trim().toLowerCase(); }
+function currentDiscoveries() {
+  const d = store.get('discovered');
+  if (!settings.discoverCount || !d || d.sig !== discoverySig()) return [];
+  const saved = new Set(store.get('savedNew') || []);
+  return d.tracks.map((p) => ({ ...unpack(p), isNew: true, source: p.src, saved: saved.has(p.u) }));
+}
+function pickSeeds(pool, n = 6) {
+  const seen = new Set(), seeds = [];
+  for (const t of shuffleArray(pool.length ? pool : tracks)) {
+    const a = t.artists[0]?.name;
+    if (!a || seen.has(a)) continue;
+    seen.add(a);
+    seeds.push({ artist: a, title: t.name });
+    if (seeds.length >= n) break;
+  }
+  return seeds;
+}
+async function searchTrack(cand) {
+  const q = `track:${cand.title.replace(/\s*[([].*?[)\]]/g, '')} artist:${cand.artist}`;
+  const res = await api(`/search?type=track&limit=3&q=${encodeURIComponent(q)}`);
+  const want = Matcher.normalize(cand.artist);
+  const hit = (res?.tracks?.items || []).find((t) => t.artists.some((a) => {
+    const n = Matcher.normalize(a.name);
+    return n === want || n.includes(want) || want.includes(n);
+  }));
+  return hit ? pack(fromSaved({ track: hit, added_at: null })) : null;
+}
+async function discoverNew(force = false) {
+  const n = Number(settings.discoverCount) || 0;
+  if (!n || !kiUrl() || !tracks.length || discovering) return false;
+  if (Date.now() < (store.get('blockedUntil') || 0)) return false;
+  const sig = discoverySig();
+  if (!force && store.get('discovered')?.sig === sig) return false;
+  discovering = true;
+  $('discoverBtn').disabled = true;
+  check('discover', 'wait', 'suche Vorschläge …');
+  const c = currentCriteria();
+  try {
+    const res = await fetch(kiUrl() + '/discover', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (await getAccessToken()) },
+      body: JSON.stringify({
+        text: $('query').value.trim(), count: n, kiShare: Number(settings.kiShare),
+        seeds: pickSeeds(poolFor(c)), years: c.years || null,
+        artists: libraryForKi().artists.slice(0, 400),
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    const cache = store.get('discoverCache') || {};
+    const libUris = new Set(tracks.map((t) => t.uri));
+    const libKeys = new Set(tracks.map((t) => keyOf(t.artists[0]?.name || '', t.name)));
+    const found = [], foundKeys = new Set();
+    let searches = 0, cached = 0;
+    const take = async (list, want, src) => {
+      let got = 0;
+      for (const cand of list) {
+        if (got >= want || found.length >= n) break;
+        const k = keyOf(cand.artist, cand.title);
+        if (libKeys.has(k) || foundKeys.has(k)) continue;
+        let hit = cache[k];
+        if (hit === undefined) {
+          if (searches >= n) break;                       // Spotify-Budget für diesen Mix erschöpft
+          searches++;
+          hit = await searchTrack(cand);
+          cache[k] = hit;
+        } else cached++;
+        if (!hit || libUris.has(hit.u)) continue;
+        const t = unpack(hit);
+        if (c.years && !(t.year && t.year >= c.years.from && t.year <= c.years.to)) continue;
+        if (c.exclude.some((r) => Matcher.trackMatches(t, r, genres))) continue;
+        foundKeys.add(k);
+        found.push({ ...hit, src });
+        got++;
+      }
+    };
+    await take(data.lastfm || [], data.wantLast, 'lastfm');
+    await take(data.ki || [], n - found.length, 'ki');
+    if (found.length < n && Number(settings.kiShare) < 100) await take(data.lastfm || [], n - found.length, 'lastfm');
+
+    const keys = Object.keys(cache);                       // Merkliste begrenzen
+    if (keys.length > 3000) keys.slice(0, keys.length - 3000).forEach((k) => delete cache[k]);
+    store.set('discoverCache', cache);
+    store.set('discovered', { sig, tracks: found });
+    const fromLast = found.filter((t) => t.src === 'lastfm').length;
+    const detail = `${found.length} neue Songs (${fromLast} Last.fm, ${found.length - fromLast} KI) · ${searches} Spotify-Suchen` +
+      (cached ? `, ${cached} aus dem Speicher` : '') + (data.notes?.length ? ' · ' + data.notes.join(' / ') : '');
+    check('discover', found.length ? 'ok' : 'fail', detail);
+    log('Entdecken: ' + detail);
+    if (found.length) toast(`${found.length} neue Songs eingemischt.`);
+    return true;
+  } catch (e) {
+    check('discover', 'fail', e.message);
+    if (e.status === 429) toast('Spotify bremst – neue Songs später.', true);
+    return false;
+  } finally {
+    discovering = false;
+    $('discoverBtn').disabled = false;
+  }
+}
+async function saveNewSong(uri, btn) {
+  if (!hasScope('user-library-modify')) { toast('Zum Speichern einmal neu anmelden (neues Recht).', true); return; }
+  btn.disabled = true;
+  try {
+    await api('/me/library', { method: 'PUT', body: JSON.stringify({ uris: [uri] }) });
+    const saved = new Set(store.get('savedNew') || []); saved.add(uri); store.set('savedNew', [...saved]);
+    queue.forEach((t) => { if (t.uri === uri) t.saved = true; });
+    btn.textContent = '♥'; btn.classList.add('on');
+    toast('In deinen Lieblingssongs gespeichert.');
+  } catch (e) {
+    toast('Speichern fehlgeschlagen: ' + e.message, true);
+    btn.disabled = false;
+  }
+}
+function renderDiscoverSettings() {
+  const n = Number(settings.discoverCount), k = Number(settings.kiShare);
+  $('discoverCount').value = n;
+  $('kiShare').value = k;
+  $('discoverCountLabel').textContent = n ? `${n} Songs` : 'aus';
+  $('discoverCountHint').textContent = n
+    ? `Verbraucht pro Mix höchstens ${n} Spotify-Suchen. Einmal gefundene Songs kosten nichts mehr.`
+    : 'Es werden keine neuen Songs gesucht und kein Spotify-Kontingent dafür verbraucht.';
+  $('kiShareLabel').textContent = k === 0 ? 'nur Last.fm' : k === 100 ? 'nur KI' : `Last.fm ${100 - k} % · KI ${k} %`;
+  $('discoverBtn').hidden = !n || !kiUrl();
 }
 async function testKi() {
   const url = kiUrl();
@@ -614,7 +757,8 @@ async function testKi() {
     if (!h.apiKey) problems.push('API-Schlüssel fehlt');
     if (!h.allowedUsers) problems.push('Freigabeliste leer');
     if (problems.length) { check('ki', 'fail', 'Erreichbar, aber: ' + problems.join(', ')); return; }
-    check('ki', 'ok', `erreichbar · ${h.model}${h.dailyLimit ? ' · Limit ' + h.dailyLimit + '/Tag' : ''}`);
+    check('ki', 'ok', `erreichbar · ${h.model}${h.dailyLimit ? ' · Limit ' + h.dailyLimit + '/Tag' : ''} · Last.fm ${h.lastfm ? 'eingerichtet' : 'nicht eingerichtet'}`);
+    $('discoverNote').textContent = h.lastfm ? '' : 'Auf dem Server ist noch kein Last.fm-Schlüssel eingetragen – Vorschläge kommen bis dahin nur von der KI (sofern sie nicht auf „nur Last.fm“ steht).';
   } catch (e) {
     check('ki', 'fail', 'Nicht erreichbar: ' + e.message);
   }
@@ -660,14 +804,32 @@ function spreadArtists(list) {
   }
   return out;
 }
-function makeShuffle() {
-  showParsed();
-  const c = currentCriteria();
+function poolFor(c) {
   let pool = tracks.slice(0, c.count);
   if (c.years) pool = pool.filter((t) => t.year && t.year >= c.years.from && t.year <= c.years.to);
   if (c.include.length) pool = pool.filter((t) => c.include.some((r) => Matcher.trackMatches(t, r, genres)));
   if (c.exclude.length) pool = pool.filter((t) => !c.exclude.some((r) => Matcher.trackMatches(t, r, genres)));
-  queue = spreadArtists(pool);
+  return pool;
+}
+/* Neue Songs gleichmäßig zwischen die eigenen verteilen statt alle ans Ende. */
+function mergeNew(own, fresh) {
+  if (!fresh.length) return own;
+  if (!own.length) return shuffleArray(fresh);
+  const out = [], f = shuffleArray(fresh);
+  const step = (own.length + f.length) / f.length;
+  let next = step / 2, fi = 0;
+  for (let i = 0, oi = 0; i < own.length + f.length; i++) {
+    if (fi < f.length && (i >= next || oi >= own.length)) { out.push(f[fi++]); next += step; }
+    else out.push(own[oi++]);
+  }
+  return out;
+}
+function makeShuffle() {
+  showParsed();
+  const c = currentCriteria();
+  const pool = poolFor(c);
+  const fresh = currentDiscoveries();
+  queue = mergeNew(spreadArtists(pool), fresh);
   renderQueue();
   $('playBtn').disabled = !queue.length;
   $('shuffleBtn').disabled = !tracks.length;
@@ -680,8 +842,11 @@ function renderQueue() {
   $('count').textContent = queue.length ? `· ${queue.length}` : '';
   $('empty').hidden = !!tracks.length;
   const shown = queue.slice(0, 300);
-  $('list').innerHTML = shown.map((t) =>
-    `<li><span class="t">${escapeHtml(t.name)}</span><span class="a">${escapeHtml(t.artists.map((a) => a.name).join(', '))}</span></li>`).join('')
+  $('list').innerHTML = shown.map((t) => t.isNew
+    ? `<li class="is-new"><span class="t">${escapeHtml(t.name)} <span class="new">neu</span></span>
+        <button class="heart${t.saved ? ' on' : ''}" data-uri="${escapeHtml(t.uri)}" aria-label="${t.saved ? 'Gespeichert' : 'In Lieblingssongs speichern'}">${t.saved ? '♥' : '♡'}</button>
+        <span class="a">${escapeHtml(t.artists.map((a) => a.name).join(', '))}${t.source === 'lastfm' ? ' · Last.fm' : ' · KI'}</span></li>`
+    : `<li><span class="t">${escapeHtml(t.name)}</span><span class="a">${escapeHtml(t.artists.map((a) => a.name).join(', '))}</span></li>`).join('')
     + (queue.length > shown.length ? `<li><span class="a">… und ${queue.length - shown.length} weitere</span></li>` : '');
 }
 
@@ -866,7 +1031,7 @@ async function loadProfile() {
     check('profile', premium ? 'ok' : 'fail', `${me.display_name || me.id} · ${premium ? 'Premium' : 'kein Premium – Abspielen nicht möglich'}`);
     $('logoutBtn').hidden = false;
     $('loginBtn').textContent = 'Neu anmelden';
-    if (!SCOPES.every(hasScope)) toast('Neue Funktionen: bitte in den Einstellungen einmal neu anmelden.', true);
+    if (!SCOPES.filter((x) => !OPTIONAL_SCOPES.includes(x)).every(hasScope)) toast('Neue Funktionen: bitte in den Einstellungen einmal neu anmelden.', true);
     return true;
   } catch (e) {
     check('profile', 'fail', e.message);
@@ -904,6 +1069,11 @@ async function init() {
   renderDevice();
   $('deviceClose').addEventListener('click', () => $('devicePicker').close());
   $('pasteBtn').addEventListener('click', pasteLoginCode);
+  renderDiscoverSettings();
+  $('discoverCount').addEventListener('input', () => { settings.discoverCount = Number($('discoverCount').value); saveSettings(); renderDiscoverSettings(); makeShuffle(); });
+  $('kiShare').addEventListener('input', () => { settings.kiShare = Number($('kiShare').value); saveSettings(); renderDiscoverSettings(); });
+  $('discoverBtn').addEventListener('click', async () => { if (await discoverNew(true)) makeShuffle(); });
+  $('list').addEventListener('click', (e) => { const b = e.target.closest('.heart'); if (b && !b.disabled && !b.classList.contains('on')) saveNewSong(b.dataset.uri, b); });
   $('pasteField').addEventListener('input', () => { if ($('pasteField').value.trim().startsWith('SS1.')) acceptLoginCode($('pasteField').value); });
   $('handoffClose').addEventListener('click', () => $('handoff').close());
   document.addEventListener('visibilitychange', () => {
@@ -955,6 +1125,7 @@ async function startOnline() {
   if (await loadProfile()) {
     await syncLibrary(false);
     if (!syncing) loadGenres();
+    if (await discoverNew()) makeShuffle();     // nur, wenn es für den aktuellen Wunsch noch keine Vorschläge gibt
   }
 }
 

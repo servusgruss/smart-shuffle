@@ -24,6 +24,11 @@ App: `https://servusgruss.github.io/smart-shuffle/`
 - **KI (optional):** versteht auch Stimmungen und Anlässe („was Ruhiges zum Kochen“) über einen
   eigenen Cloudflare Worker mit Claude – Einrichtung in [`worker/README.md`](worker/README.md).
   Ohne KI läuft die Erkennung komplett auf dem Gerät.
+- **Neues entdecken:** mischt Songs ein, die du noch nicht gespeichert hast, aber zu deinem Wunsch
+  passen – von Last.fm (ähnliche Songs aus Hördaten) und/oder der KI. Regler für Anzahl
+  (= max. Spotify-Suchen pro Mix, 0 = aus) und Herkunft (nur Last.fm … nur KI). Neue Songs haben
+  ein „neu“-Schild; das Herz speichert sie in deine Lieblingssongs. Gefundene Songs werden gemerkt
+  und nie zweimal gesucht.
 - **5 Designs** (Einstellungen → Design): Grün (Spotify-Stil), Weiß, Schwarz, Nebel, Vinyl
 - **Als App auf den Home-Bildschirm** legbar (eigenes Icon, Vollbild). iOS gibt Home-Bildschirm-Apps
   einen eigenen Speicher, getrennt von Safari; landet die Spotify-Anmeldung im Browser, übergibt
@@ -51,8 +56,8 @@ Mode sind auf wenige Nutzer begrenzt – für privaten Gebrauch reicht das.
 
 ## Sicherheit
 - Das Spotify-Passwort sieht die App nie, Login läuft auf accounts.spotify.com
-- Rechte: Profil lesen, Lieblingssongs lesen, Wiedergabe steuern, *eigene private*
-  Playlist anlegen/befüllen. Kein Löschen, keine Käufe.
+- Rechte: Profil lesen, Lieblingssongs lesen und per Herz ergänzen, Wiedergabe steuern,
+  *eigene private* Playlist anlegen/befüllen. Kein Löschen, keine Käufe.
 - Content-Security-Policy: Die Seite lädt keine fremden Skripte und spricht nur mit Spotify
   und dem eigenen KI-Worker (`*.workers.dev`)
 - Der KI-Schlüssel liegt nur im Worker, nie auf einem Gerät
@@ -67,7 +72,7 @@ Mode sind auf wenige Nutzer begrenzt – für privaten Gebrauch reicht das.
 | `match.js` | Wunsch-Zerlegung und unscharfe Zuordnung zu Interpreten/Genres |
 | `config.js` | optionale Voreinstellungen (Client ID, KI-Adresse) |
 | `worker/` | KI-Worker für Cloudflare (eigene Anleitung) |
-| `test/` | Tests: Namenserkennung (`node test/match.test.js`), Worker (`node test/worker.test.mjs`) |
+| `test/` | Tests: Namenserkennung (`node test/match.test.js`), Worker (`node test/worker.test.mjs`, `node test/discover.test.mjs`) |
 
 ## Erweiterbar
 Weitere Quellen (eigene Playlists, gespeicherte Alben) werden in `app.js` unter `SOURCES`
@@ -75,6 +80,8 @@ ergänzt. Hinweis: Spotify liefert Playlist-Inhalte seit 2026 nur noch für eige
 gemeinsame Playlists.
 
 ## Bekannte Grenzen
+- Spotify-eigene Mixe (Rock-Mix, Daily Mix …) sind für neue Apps seit Nov. 2024 gesperrt;
+  „Neues entdecken“ ist der Ersatz.
 - Stimmungen erkennt die KI über Genres und bekannte Interpreten, nicht pro einzelnem Song
   (Spotify gibt neuen Apps keine Audio-Merkmale mehr).
 

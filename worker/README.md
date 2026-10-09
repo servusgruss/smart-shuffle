@@ -45,6 +45,21 @@ App → **Einstellungen → KI** → Worker-Adresse eintragen → **Verbindung t
 Damit Freunde die Adresse nicht eintippen müssen, kann sie in `config.js` bei `kiUrl`
 als Voreinstellung eingetragen werden.
 
+## Last.fm für „Neues entdecken“ (empfohlen)
+Last.fm liefert ähnliche Songs aus echten Hördaten („wer X hört, hört auch Y“). Ohne Schlüssel
+kommen Vorschläge nur von der KI.
+1. Kostenloses Konto auf <https://www.last.fm> (falls noch keins)
+2. <https://www.last.fm/api/account/create> öffnen: App-Name z. B. „Smart Shuffle“, kurze
+   Beschreibung; Callback-URL leer lassen → **API Key** kopieren (das „Shared Secret“ wird nicht gebraucht)
+3. Cloudflare → Worker → **Settings → Variables and Secrets** → **Add**:
+   Typ **Secret**, Name `LASTFM_API_KEY`, Wert = API Key → **Deploy**
+4. In der App **Einstellungen → KI → Verbindung testen**: dort steht dann „Last.fm eingerichtet“
+
+In der App steuern zwei Regler unter **Einstellungen → Neues entdecken**:
+- **Neue Songs pro Mix** (0–50): zugleich die Höchstzahl an Spotify-Suchen pro Mix; 0 schaltet alles ab
+- **Herkunft** von „nur Last.fm“ bis „nur KI“: an den Enden ist die jeweils andere Quelle komplett aus.
+  Liefert Last.fm zu wenig, ergänzt die KI – außer sie steht auf aus.
+
 ## Optional: Tageslimit pro Person
 1. Cloudflare → **Storage & Databases → KV** → Namespace `smart-shuffle-usage` anlegen
 2. In `wrangler.toml` den Block `[[kv_namespaces]]` einkommentieren und die ID eintragen
@@ -53,6 +68,9 @@ als Voreinstellung eingetragen werden.
 ## Kosten
 - **Cloudflare:** kostenlos (Free-Plan: 100.000 Anfragen pro Tag; die Wartezeit auf Claude
   zählt nicht zur Rechenzeit)
+- **Last.fm:** kostenlos; pro Vorschlagsrunde bis zu 8 Abfragen
+- **Neue Songs:** pro Mix ein Claude-Aufruf (falls KI-Anteil > 0) und höchstens so viele Spotify-Suchen,
+  wie in der App eingestellt
 - **Genre-Zuordnung:** einmalig pro Interpret, bei ~2.000 Interpreten grob ein paar Cent
 - **Claude Haiku 5.5:** pro Sprachbefehl wird die Interpreten- und Genreliste mitgeschickt.
   Bei ~1.000 Interpreten grob ein Bruchteil eines Cents pro Befehl; die Liste wird zwischengespeichert
