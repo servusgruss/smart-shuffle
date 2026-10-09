@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1115">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Smart Shuffle">
+  <title>Smart Shuffle</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Smart Shuffle</h1>
+      <p class="sub">Prototyp · Verbindungstest</p>
+    </header>
+
+    <!-- 1. Einrichtung -->
+    <section id="setup" class="card">
+      <h2>1 · Spotify verbinden</h2>
+      <label for="clientId">Client ID deiner Spotify-App</label>
+      <input id="clientId" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="z. B. 3f1a…">
+      <p class="hint">Redirect URI, die du im Spotify-Dashboard eintragen musst:</p>
+      <code id="redirectUri" class="copy" title="Antippen zum Kopieren"></code>
+      <div class="row">
+        <button id="loginBtn" class="primary">Mit Spotify anmelden</button>
+        <button id="logoutBtn" class="ghost" hidden>Abmelden</button>
+      </div>
+    </section>
+
+    <!-- 2. Diagnose -->
+    <section class="card">
+      <h2>2 · Verbindungstest</h2>
+      <ul id="checks" class="checks">
+        <li data-check="auth">Anmeldung</li>
+        <li data-check="profile">Profil &amp; Premium</li>
+        <li data-check="tracks">Letzte gespeicherte Songs</li>
+        <li data-check="genres">Genres der Interpreten</li>
+        <li data-check="speech">Spracheingabe</li>
+        <li data-check="devices">Spotify-Gerät gefunden</li>
+        <li data-check="play">Wiedergabe gestartet</li>
+      </ul>
+      <div class="row">
+        <button id="loadBtn" disabled>Songs laden</button>
+        <button id="genreBtn" disabled>Genres laden</button>
+      </div>
+    </section>
+
+    <!-- 3. Kriterien -->
+    <section class="card">
+      <h2>3 · Shuffle-Kriterien</h2>
+      <div class="voice">
+        <button id="micBtn" class="mic" aria-label="Spracheingabe starten">🎙️</button>
+        <input id="query" type="text" placeholder="z. B. „nur Indie, ohne Rap“">
+      </div>
+      <p id="parsed" class="hint"></p>
+      <div class="row">
+        <button id="shuffleBtn" disabled>Shuffle erstellen</button>
+        <button id="playBtn" class="primary" disabled>Auf Spotify abspielen</button>
+      </div>
+    </section>
+
+    <!-- 4. Ergebnis -->
+    <section class="card">
+      <h2>4 · Reihenfolge <span id="count" class="muted"></span></h2>
+      <ol id="list" class="list"></ol>
+    </section>
+
+    <section class="card">
+      <h2>Protokoll</h2>
+      <pre id="log" class="log"></pre>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
