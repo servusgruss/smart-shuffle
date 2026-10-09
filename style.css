@@ -79,7 +79,8 @@ h2 span { color: var(--muted); font-weight: 400; }
   appearance: none; -webkit-appearance: none; border: 0; cursor: pointer;
   background: var(--surface-2); border-radius: var(--radius); padding: 7px 14px; font-size: 14px; font-weight: 600;
 }
-.chips { display: flex; gap: 6px; }
+.chips { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.chips-label { font-size: 14px; color: var(--muted); margin: 0 2px 0 4px; }
 .chip {
   border: 1px solid var(--line); background: transparent; border-radius: var(--radius);
   padding: 6px 12px; font-size: 14px; cursor: pointer; color: var(--muted);

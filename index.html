@@ -34,9 +34,12 @@
           <option value="liked">Lieblingssongs</option>
         </select>
       </label>
-      <div class="chips" role="radiogroup" aria-label="Wie viele Songs">
-        <button class="chip" data-count="100" role="radio">Letzte 100</button>
-        <button class="chip" data-count="250" role="radio">Letzte 250</button>
+      <div class="chips" role="radiogroup" aria-label="Wie viele der zuletzt gespeicherten Songs">
+        <span class="chips-label">Letzte</span>
+        <button class="chip" data-count="10" role="radio">10</button>
+        <button class="chip" data-count="50" role="radio">50</button>
+        <button class="chip" data-count="100" role="radio">100</button>
+        <button class="chip" data-count="250" role="radio">250</button>
         <button class="chip" data-count="all" role="radio">Alle</button>
       </div>
     </section>
@@ -78,6 +81,7 @@
     <h3>Spotify</h3>
     <label for="clientId">Client ID</label>
     <input id="clientId" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="aus dem Spotify-Dashboard">
+    <p class="hint">Wird nur auf diesem Gerät gespeichert. Jede Person kann so ihr eigenes Spotify verbinden.</p>
     <p class="hint">Redirect URI im Spotify-Dashboard:</p>
     <code id="redirectUri" class="copy" title="Antippen zum Kopieren"></code>
     <div class="row">

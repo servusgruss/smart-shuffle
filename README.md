@@ -14,7 +14,7 @@ App: `https://servusgruss.github.io/smart-shuffle/`
   „Apatsche“ → Apache 207. Abgleich gegen die Interpreten *deiner* Bibliothek mit
   Tippabstand und deutscher Aussprache (Kölner Phonetik), komplett lokal, ohne KI-Dienst.
 - **Kriterien:** „nur …“, „ohne/kein …“, „die letzten 50“, „alle“, Interpret, Genre, Songtitel
-- **Umfang:** Letzte 100 / Letzte 250 / Alle Lieblingssongs
+- **Umfang:** Letzte 10 / 50 / 100 / 250 / Alle Lieblingssongs
 - **Smart Shuffle:** derselbe Interpret frühestens nach 3 anderen Songs wieder
 - **Abspielen ohne Längenlimit:** die Reihenfolge wird in eine eigene private Playlist
   „Smart Shuffle“ geschrieben (bei jedem Abspielen überschrieben) und von dort gestartet
@@ -28,12 +28,20 @@ App: `https://servusgruss.github.io/smart-shuffle/`
 2. **Spotify-App** auf <https://developer.spotify.com/dashboard> anlegen, *Web API* anhaken
    - Redirect URI: `https://servusgruss.github.io/smart-shuffle/` (mit `/` am Ende)
    - User Management: eigenes Spotify-Konto eintragen
-3. **Client ID** in der App unter Einstellungen eintragen – oder einmalig in `config.js`,
-   dann muss sie auf keinem Gerät mehr eingegeben werden (sie ist kein Geheimnis)
+3. **Client ID** in der App unter Einstellungen eintragen. Sie wird nur auf dem jeweiligen
+   Gerät gespeichert (`config.js` bleibt leer), damit jede Person ihr eigenes Spotify nutzen kann.
 4. Anmelden. Nach Updates mit neuen Rechten fordert die App einmal zur Neuanmeldung auf.
 
 Seit Februar 2026 braucht der Besitzer der Spotify-App **Premium**; Apps im Development
 Mode sind auf wenige Nutzer begrenzt – für privaten Gebrauch reicht das.
+
+## Mehrere Personen
+- **Über deine Spotify-App:** Bis zu 5 Personen im Dashboard unter *User Management*
+  eintragen; sie nutzen deine Client ID.
+- **Mit eigener Spotify-App:** Jede Person legt eine eigene App an (Premium nötig), trägt
+  dieselbe Redirect URI ein und gibt ihre Client ID auf ihrem Gerät ein.
+- Meldet sich auf einem Gerät eine andere Person an, wird die vorherige Bibliothek entfernt.
+  „Abmelden“ löscht Login und Songs vom Gerät; Client ID und Design bleiben.
 
 ## Sicherheit
 - Das Spotify-Passwort sieht die App nie, Login läuft auf accounts.spotify.com

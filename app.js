@@ -97,6 +97,7 @@ async function sha256base64url(text) {
 async function login() {
   const id = $('clientId').value.trim();
   if (!id) { toast('Bitte zuerst die Client ID eintragen.', true); return; }
+  if (store.get('clientId') && store.get('clientId') !== id) store.del('token'); // andere Spotify-App → alter Login gilt nicht
   store.set('clientId', id);
   const verifier = randomString(64), state = randomString(16);
   store.set('pkce', { verifier, state });
@@ -161,9 +162,24 @@ async function getAccessToken() {
   return (await refreshing).access;
 }
 const hasScope = (s) => (store.get('token')?.scope || '').split(' ').includes(s);
+/* Persönliche Daten der angemeldeten Person vom Gerät entfernen.
+ * Client ID und Design bleiben, Genres auch (die gehören zu Interpreten, nicht zu Personen). */
+function clearUserData() {
+  Object.keys(SOURCES).forEach((s) => store.del('lib:' + s));
+  store.del('playlistId');
+  store.del('me');
+  settings.query = '';
+  saveSettings();
+  $('query').value = '';
+  tracks = []; queue = [];
+  index = Matcher.buildIndex([], genres);
+  ['tracks', 'devices', 'play'].forEach((c) => check(c, '', ''));
+  renderQueue(); showParsed();
+}
 function logout() {
   store.del('token');
-  showLoggedOut('Abgemeldet.');
+  clearUserData();
+  showLoggedOut('Abgemeldet. Deine Songs wurden von diesem Gerät entfernt.');
 }
 
 /* ---------- Spotify-API ---------- */
@@ -517,6 +533,11 @@ async function loadProfile() {
   check('profile', 'wait');
   try {
     me = await api('/me');
+    const prev = store.get('me');
+    if (prev && prev.id !== me.id) {          // andere Person hat sich auf diesem Gerät angemeldet
+      clearUserData();
+      log('Neue Person angemeldet – vorherige Bibliothek entfernt.');
+    }
     store.set('me', { id: me.id, name: me.display_name });
     const premium = me.product === 'premium';
     check('auth', 'ok');
