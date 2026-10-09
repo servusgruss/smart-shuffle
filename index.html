@@ -1,77 +1,113 @@
 <!doctype html>
-<html lang="de">
+<html lang="de" data-theme="gruen">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0f1115">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://api.spotify.com https://accounts.spotify.com; img-src 'self' data: https://i.scdn.co; style-src 'self'; script-src 'self'; base-uri 'self'; form-action 'none'">
+  <meta name="theme-color" content="#121212">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="Smart Shuffle">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Shuffle">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" href="icons/icon-192.png">
   <title>Smart Shuffle</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <main>
-    <header>
-      <h1>Smart Shuffle</h1>
-      <p class="sub">Prototyp · Verbindungstest</p>
+    <header class="top">
+      <div>
+        <h1>Smart Shuffle</h1>
+        <p id="libStatus" class="status">Nicht verbunden</p>
+      </div>
+      <button id="settingsBtn" class="icon-btn" aria-label="Einstellungen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+      </button>
     </header>
 
-    <!-- 1. Einrichtung -->
-    <section id="setup" class="card">
-      <h2>1 · Spotify verbinden</h2>
-      <label for="clientId">Client ID deiner Spotify-App</label>
-      <input id="clientId" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="z. B. 3f1a…">
-      <p class="hint">Redirect URI, die du im Spotify-Dashboard eintragen musst:</p>
-      <code id="redirectUri" class="copy" title="Antippen zum Kopieren"></code>
-      <div class="row">
-        <button id="loginBtn" class="primary">Mit Spotify anmelden</button>
-        <button id="logoutBtn" class="ghost" hidden>Abmelden</button>
+    <!-- Quelle & Umfang -->
+    <section class="scope" aria-label="Umfang">
+      <label class="source">
+        <span class="sr">Quelle</span>
+        <select id="source">
+          <option value="liked">Lieblingssongs</option>
+        </select>
+      </label>
+      <div class="chips" role="radiogroup" aria-label="Wie viele Songs">
+        <button class="chip" data-count="100" role="radio">Letzte 100</button>
+        <button class="chip" data-count="250" role="radio">Letzte 250</button>
+        <button class="chip" data-count="all" role="radio">Alle</button>
       </div>
     </section>
 
-    <!-- 2. Diagnose -->
-    <section class="card">
-      <h2>2 · Verbindungstest</h2>
-      <ul id="checks" class="checks">
-        <li data-check="auth">Anmeldung</li>
-        <li data-check="profile">Profil &amp; Premium</li>
-        <li data-check="tracks">Letzte gespeicherte Songs</li>
-        <li data-check="genres">Genres der Interpreten</li>
-        <li data-check="speech">Spracheingabe</li>
-        <li data-check="devices">Spotify-Gerät gefunden</li>
-        <li data-check="play">Wiedergabe gestartet</li>
-      </ul>
-      <div class="row">
-        <button id="loadBtn" disabled>Songs laden</button>
-        <button id="genreBtn" disabled>Genres laden</button>
-      </div>
+    <!-- Wunsch: der Satz ist das Herzstück -->
+    <section class="wish">
+      <textarea id="query" rows="2" placeholder="Sag, was du hören willst" aria-label="Shuffle-Wunsch"></textarea>
+      <div id="parsed" class="parsed" aria-live="polite"></div>
     </section>
 
-    <!-- 3. Kriterien -->
-    <section class="card">
-      <h2>3 · Shuffle-Kriterien</h2>
-      <div class="voice">
-        <button id="micBtn" class="mic" aria-label="Spracheingabe starten">🎙️</button>
-        <input id="query" type="text" placeholder="z. B. „nur Indie, ohne Rap“">
-      </div>
-      <p id="parsed" class="hint"></p>
-      <div class="row">
-        <button id="shuffleBtn" disabled>Shuffle erstellen</button>
-        <button id="playBtn" class="primary" disabled>Auf Spotify abspielen</button>
-      </div>
+    <section class="controls">
+      <button id="shuffleBtn" class="secondary" disabled>Neu mischen</button>
+      <button id="micBtn" class="mic" aria-label="Wunsch sprechen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      </button>
+      <button id="playBtn" class="primary" disabled>Abspielen</button>
     </section>
+    <p id="toast" class="toast" role="status" aria-live="polite"></p>
 
-    <!-- 4. Ergebnis -->
-    <section class="card">
-      <h2>4 · Reihenfolge <span id="count" class="muted"></span></h2>
+    <section class="queue">
+      <h2>Reihenfolge <span id="count"></span></h2>
       <ol id="list" class="list"></ol>
-    </section>
-
-    <section class="card">
-      <h2>Protokoll</h2>
-      <pre id="log" class="log"></pre>
+      <p id="empty" class="empty">Verbinde Spotify in den Einstellungen, dann erscheinen hier deine Songs.</p>
     </section>
   </main>
+
+  <!-- Einstellungen -->
+  <dialog id="settings" class="sheet">
+    <div class="sheet-head">
+      <h2>Einstellungen</h2>
+      <button id="closeSettings" class="icon-btn" aria-label="Schließen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+
+    <h3>Design</h3>
+    <div id="themes" class="themes"></div>
+
+    <h3>Spotify</h3>
+    <label for="clientId">Client ID</label>
+    <input id="clientId" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="aus dem Spotify-Dashboard">
+    <p class="hint">Redirect URI im Spotify-Dashboard:</p>
+    <code id="redirectUri" class="copy" title="Antippen zum Kopieren"></code>
+    <div class="row">
+      <button id="loginBtn" class="primary">Mit Spotify anmelden</button>
+      <button id="logoutBtn" hidden>Abmelden</button>
+    </div>
+
+    <h3>Bibliothek</h3>
+    <p id="libInfo" class="hint">Noch nichts geladen.</p>
+    <div class="row">
+      <button id="reloadBtn" disabled>Komplett neu laden</button>
+    </div>
+
+    <h3>Verbindungstest</h3>
+    <ul id="checks" class="checks">
+      <li data-check="auth">Anmeldung</li>
+      <li data-check="profile">Profil &amp; Premium</li>
+      <li data-check="tracks">Lieblingssongs</li>
+      <li data-check="genres">Genres der Interpreten</li>
+      <li data-check="speech">Spracheingabe</li>
+      <li data-check="devices">Spotify-Gerät</li>
+      <li data-check="play">Wiedergabe</li>
+    </ul>
+
+    <h3>Protokoll</h3>
+    <pre id="log" class="log"></pre>
+  </dialog>
+
+  <script src="config.js"></script>
+  <script src="match.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

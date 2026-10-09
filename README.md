@@ -1,60 +1,64 @@
-# Smart Shuffle (Prototyp)
+# Smart Shuffle
 
-Web-App, die die letzten 100 gespeicherten Spotify-Songs nach gesprochenen oder getippten
-Kriterien filtert, „smart“ mischt (kein Interpret zweimal hintereinander) und auf einem
-Spotify-Gerät abspielt. Dieser Prototyp dient vor allem dem **Verbindungstest**.
+Web-App für einen intelligenteren Spotify-Shuffle: Wunsch sprechen oder tippen
+(„nur Kraftklub und Indie, ohne Rap“), die App filtert deine Lieblingssongs, mischt
+so, dass derselbe Interpret nicht ständig hintereinander kommt, und spielt alles auf
+deinem iPhone ab. Läuft komplett im Browser (iPhone-Safari), ohne Server und ohne
+Client Secret (OAuth mit PKCE).
 
-Läuft komplett im Browser (iPhone-Safari geeignet), ohne Server und ohne Client Secret
-(OAuth mit PKCE).
+App: `https://servusgruss.github.io/smart-shuffle/`
+
+## Funktionen
+- **Spracheingabe** auf Deutsch (Web Speech API in Safari)
+- **Versteht Hörfehler bei Namen:** „Kraft Club“ → Kraftklub, „Billy Eilish“ → Billie Eilish,
+  „Apatsche“ → Apache 207. Abgleich gegen die Interpreten *deiner* Bibliothek mit
+  Tippabstand und deutscher Aussprache (Kölner Phonetik), komplett lokal, ohne KI-Dienst.
+- **Kriterien:** „nur …“, „ohne/kein …“, „die letzten 50“, „alle“, Interpret, Genre, Songtitel
+- **Umfang:** Letzte 100 / Letzte 250 / Alle Lieblingssongs
+- **Smart Shuffle:** derselbe Interpret frühestens nach 3 anderen Songs wieder
+- **Abspielen ohne Längenlimit:** die Reihenfolge wird in eine eigene private Playlist
+  „Smart Shuffle“ geschrieben (bei jedem Abspielen überschrieben) und von dort gestartet
+- **Merkt sich alles auf dem Gerät:** Login, Client ID, Bibliothek, Genres, Design und
+  letzten Wunsch. Beim Öffnen werden nur neu gespeicherte Songs nachgeladen.
+- **5 Designs** (Einstellungen → Design): Grün (Spotify-Stil), Weiß, Schwarz, Nebel, Vinyl
+- **Als App auf den Home-Bildschirm** legbar (eigenes Icon, Vollbild)
 
 ## Einrichtung
+1. **GitHub Pages:** Repo → Settings → Pages → *Deploy from a branch* → `main` / `(root)`
+2. **Spotify-App** auf <https://developer.spotify.com/dashboard> anlegen, *Web API* anhaken
+   - Redirect URI: `https://servusgruss.github.io/smart-shuffle/` (mit `/` am Ende)
+   - User Management: eigenes Spotify-Konto eintragen
+3. **Client ID** in der App unter Einstellungen eintragen – oder einmalig in `config.js`,
+   dann muss sie auf keinem Gerät mehr eingegeben werden (sie ist kein Geheimnis)
+4. Anmelden. Nach Updates mit neuen Rechten fordert die App einmal zur Neuanmeldung auf.
 
-### 1. GitHub Pages aktivieren
-Repo → **Settings → Pages** → Source: *Deploy from a branch* → Branch `main`, Ordner `/ (root)`.
-Nach ca. einer Minute ist die App erreichbar unter
-`https://<github-name>.github.io/<repo-name>/`.
+Seit Februar 2026 braucht der Besitzer der Spotify-App **Premium**; Apps im Development
+Mode sind auf wenige Nutzer begrenzt – für privaten Gebrauch reicht das.
 
-### 2. Spotify-App anlegen
-1. <https://developer.spotify.com/dashboard> öffnen → **Create app**
-2. Name/Beschreibung frei wählen, bei *Which API/SDKs* **Web API** anhaken
-3. **Redirect URI** exakt so eintragen, wie sie in der App unter „1 · Spotify verbinden“ angezeigt
-   wird, z. B. `https://<github-name>.github.io/smart-shuffle/` (inkl. abschließendem `/`)
-4. Unter **User Management** das eigene Spotify-Konto (E-Mail) eintragen
-5. **Client ID** kopieren (das Client Secret wird *nicht* gebraucht)
-
-Hinweis: Seit Februar 2026 braucht der Besitzer der Spotify-App **Premium**, und eine App im
-Development Mode ist auf wenige Nutzer begrenzt – für den privaten Gebrauch reicht das.
-
-### 3. Testen
-1. Seite auf dem iPhone in Safari öffnen, Client ID eintragen, **Mit Spotify anmelden**
-2. **Songs laden** → **Genres laden**
-3. Mikrofon antippen und z. B. sagen: *„nur Indie, ohne Rap“* oder
-   *„die letzten 50 Songs von Cro“*
-4. Spotify-App kurz öffnen (damit das iPhone als Gerät aktiv ist), dann **Auf Spotify abspielen**
-
-Die Checkliste „Verbindungstest“ zeigt für jeden Schritt ✓ oder ✕ mit Fehlergrund.
-
-## Was der Prototyp kann
-| Bereich | Stand |
-|---|---|
-| Login (PKCE, Token-Erneuerung) | ✓ |
-| Letzte 100 gespeicherte Songs | ✓ |
-| Genres pro Interpret (zwischengespeichert) | ✓ |
-| Spracheingabe (Web Speech API, Deutsch) | ✓ |
-| Kriterien: „nur …“, „ohne/kein …“, „die letzten N“, Interpret, Genre, Songtitel | ✓ regelbasiert |
-| Smart Shuffle: Interpreten verteilen | ✓ |
-| Wiedergabe über Spotify Connect | ✓ |
-| Stimmung („ruhig“, „energiegeladen“) per KI | geplant |
-
-## Bekannte Grenzen
-- Spracheingabe funktioniert am zuverlässigsten direkt in Safari; als Home-Bildschirm-App
-  kann iOS das Mikrofon einschränken.
-- Stimmungsbegriffe wie „ruhig“ werden noch nicht verstanden (Spotify liefert für neue Apps
-  keine Audio-Features mehr) – das ist der nächste Schritt mit KI.
-- Lokal testen: `python3 -m http.server 8888` und als Redirect URI
-  `http://127.0.0.1:8888/` eintragen (Spotify erlaubt `localhost` nicht).
+## Sicherheit
+- Das Spotify-Passwort sieht die App nie, Login läuft auf accounts.spotify.com
+- Rechte: Profil lesen, Lieblingssongs lesen, Wiedergabe steuern, *eigene private*
+  Playlist anlegen/befüllen. Kein Löschen, keine Käufe.
+- Content-Security-Policy: Die Seite lädt keine fremden Skripte und spricht nur mit Spotify
+- Zugriff jederzeit entziehen: spotify.com → Konto → Apps
 
 ## Dateien
-- `index.html` – Oberfläche
-- `style.css` – Design (hell/dunkel automatisch)
-- `app.js` – Login, Spotify-API, Spracheingabe, Kriterien-Parser, Shuffle
+| Datei | Inhalt |
+|---|---|
+| `index.html` | Oberfläche |
+| `style.css` | Layout und die 5 Designs (nur Farb-/Schrift-Tokens je Design) |
+| `app.js` | Login, Spotify-API, Zwischenspeicher, Quellen, Shuffle, Wiedergabe, Sprache |
+| `match.js` | Wunsch-Zerlegung und unscharfe Zuordnung zu Interpreten/Genres |
+| `config.js` | optionale feste Client ID |
+| `test/match.test.js` | Tests für die Namenserkennung (`node test/match.test.js`) |
+
+## Erweiterbar
+Weitere Quellen (eigene Playlists, gespeicherte Alben) werden in `app.js` unter `SOURCES`
+ergänzt. Hinweis: Spotify liefert Playlist-Inhalte seit 2026 nur noch für eigene oder
+gemeinsame Playlists.
+
+## Bekannte Grenzen
+- Stimmungen („ruhig“, „zum Feiern“) versteht die App noch nicht – Spotify gibt neuen Apps
+  keine Audio-Merkmale mehr. Dafür ist eine KI-Anbindung geplant.
+- Genres lädt Spotify nur einzeln pro Interpret; beim ersten Start dauert das im
+  Hintergrund ein paar Minuten, danach sind sie gespeichert.
