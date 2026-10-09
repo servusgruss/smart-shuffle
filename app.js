@@ -269,16 +269,20 @@ async function api(path, opts = {}, attempt = 0) {
   if (res.status === 429) {
     // Kurze Bremse: abwarten und wiederholen. Lange Bremse: abbrechen und sagen, wann es weitergeht.
     const raw = res.headers.get('Retry-After');
-    const retryAfter = raw ? Number(raw) : null;
+    const body = await res.clone().json().catch(() => null);
+    const quota = body?.error?.reason === 'QUOTA_EXCEEDED';   // Kontingent der Spotify-App aufgebraucht
+    const retryAfter = raw ? Number(raw) : quota ? 1800 : null;
     const wait = retryAfter ?? [5, 10, 20][attempt];
-    if (attempt < 3 && wait !== undefined && wait <= 30) {
+    if (!quota && attempt < 3 && wait !== undefined && wait <= 30) {
       log(`Spotify bremst, warte ${wait}s …`);
       await sleep(wait * 1000);
       return api(path, opts, attempt + 1);
     }
-    const err = new Error('Spotify bremst gerade zu viele Anfragen');
+    const err = new Error(quota ? 'Spotify-Kontingent für heute vorerst aufgebraucht' : 'Spotify bremst gerade zu viele Anfragen');
     err.status = 429;
+    err.quota = quota;
     err.retryAfter = retryAfter;
+    store.set('blockedUntil', Date.now() + (retryAfter || 120) * 1000);
     throw err;
   }
   if (res.status === 401 && attempt === 0) {           // Token serverseitig ungültig → einmal erneuern
@@ -903,7 +907,8 @@ async function init() {
   $('pasteField').addEventListener('input', () => { if ($('pasteField').value.trim().startsWith('SS1.')) acceptLoginCode($('pasteField').value); });
   $('handoffClose').addEventListener('click', () => $('handoff').close());
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && libError?.status === 429 && !syncing) syncLibrary();
+    if (document.visibilityState === 'visible' && libError?.status === 429 && !syncing
+        && Date.now() > (store.get('blockedUntil') || 0)) syncLibrary();
     if (document.visibilityState === 'visible' && store.get('loginPending') && !store.get('token')) {
       updatePasteLogin();
       if (!$('settings').open) $('settings').showModal();
@@ -936,6 +941,17 @@ async function init() {
     $('settings').showModal();
     return;
   }
+  // Während Spotify bremst, beim Start nichts anfragen – jede Anfrage verlängert die Sperre nur.
+  const blocked = (store.get('blockedUntil') || 0) - Date.now();
+  if (blocked > 0) {
+    libError = Object.assign(new Error(`Spotify bremst – neuer Versuch in ca. ${minutes(blocked / 1000)} Min.`), { status: 429 });
+    setLibStatus();
+    retryTimer = setTimeout(startOnline, blocked + 1000);
+    return;
+  }
+  await startOnline();
+}
+async function startOnline() {
   if (await loadProfile()) {
     await syncLibrary(false);
     if (!syncing) loadGenres();
