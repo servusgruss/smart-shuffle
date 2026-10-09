@@ -84,7 +84,14 @@ function renderThemePicker() {
 
 /* ---------- Login (PKCE) ---------- */
 function clientId() {
-  return (window.SMART_SHUFFLE_CONFIG && window.SMART_SHUFFLE_CONFIG.clientId) || store.get('clientId') || '';
+  const preset = window.SMART_SHUFFLE_CONFIG?.clientId || '';
+  // Reihenfolge: auf diesem Gerät bewusst geänderte ID → Voreinstellung aus config.js → ältere Geräte-Einstellung
+  return store.get('clientIdOverride') || preset || store.get('clientId') || '';
+}
+function setClientId(id) {
+  const preset = window.SMART_SHUFFLE_CONFIG?.clientId || '';
+  if (!preset) { store.set('clientId', id); return; }
+  if (!id || id === preset) store.del('clientIdOverride'); else store.set('clientIdOverride', id);
 }
 function randomString(len = 64) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -102,8 +109,8 @@ async function login() {
     toast(`Die Client ID hat ${id.length} statt 32 Zeichen oder enthält ungültige Zeichen (erlaubt: 0–9, a–f). Bitte aus dem Spotify-Dashboard kopieren.`, true);
     return;
   }
-  if (store.get('clientId') && store.get('clientId') !== id) store.del('token'); // andere Spotify-App → alter Login gilt nicht
-  store.set('clientId', id);
+  if (store.get('token') && clientId() !== id) store.del('token'); // andere Spotify-App → alter Login gilt nicht
+  setClientId(id);
   const verifier = randomString(64);
   /* Auf dem iPhone-Home-Bildschirm landet die Rückkehr von Spotify oft in einem Browserfenster mit
    * eigenem Speicher. Damit der Login dort trotzdem abgeschlossen werden kann, reisen Prüfschlüssel,
@@ -196,7 +203,7 @@ async function acceptLoginCode(raw) {
   if (!code.startsWith('SS1.')) { toast('Das ist kein Login-Code von Smart Shuffle.', true); return; }
   try {
     const data = JSON.parse(fromB64url(code.slice(4)));
-    if (data.c) { store.set('clientId', data.c); $('clientId').value = data.c; }
+    if (data.c) { setClientId(data.c); $('clientId').value = clientId(); }
     store.set('token', { access: '', refresh: data.r, scope: data.s || '', expires: 0 });
     await getAccessToken();                      // tauscht den Code gegen einen frischen Zugang
     store.del('loginPending');
@@ -841,7 +848,7 @@ async function init() {
   $('redirectUri').textContent = REDIRECT_URI;
   $('redirectUri').addEventListener('click', () => navigator.clipboard?.writeText(REDIRECT_URI).then(() => toast('Redirect URI kopiert.')));
   $('clientId').value = clientId();
-  $('clientId').addEventListener('change', () => store.set('clientId', $('clientId').value.trim()));
+  $('clientId').addEventListener('change', () => { setClientId($('clientId').value.replace(/\s+/g, '').toLowerCase()); $('clientId').value = clientId(); });
   $('loginBtn').addEventListener('click', login);
   $('logoutBtn').addEventListener('click', logout);
   $('reloadBtn').addEventListener('click', () => syncLibrary(true));

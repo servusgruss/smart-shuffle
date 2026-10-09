@@ -34,8 +34,8 @@ App: `https://servusgruss.github.io/smart-shuffle/`
 2. **Spotify-App** auf <https://developer.spotify.com/dashboard> anlegen, *Web API* anhaken
    - Redirect URI: `https://servusgruss.github.io/smart-shuffle/` (mit `/` am Ende)
    - User Management: eigenes Spotify-Konto eintragen
-3. **Client ID** in der App unter Einstellungen eintragen. Sie wird nur auf dem jeweiligen
-   Gerät gespeichert (`config.js` bleibt leer), damit jede Person ihr eigenes Spotify nutzen kann.
+3. **Client ID und KI-Adresse** stehen als Voreinstellung in `config.js` – Freunde öffnen nur den Link
+   und melden sich an. Pro Gerät lassen sich beide in den Einstellungen überschreiben.
 4. Anmelden. Nach Updates mit neuen Rechten fordert die App einmal zur Neuanmeldung auf.
 
 Seit Februar 2026 braucht der Besitzer der Spotify-App **Premium**; Apps im Development
@@ -84,5 +84,3 @@ gemeinsame Playlists.
 - Jahrzehnte richten sich nach dem Erscheinungsjahr des Albums; Songs auf späteren
   Best-of-Alben oder Remastern zählen zum späteren Jahr.
 
-## Offene Punkte
-- Client ID als Voreinstellung in `config.js`, damit Freunde nur den Link öffnen und sich anmelden
