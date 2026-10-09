@@ -1,8 +1,10 @@
 // Testet den Worker ohne Netz: Spotify und Claude werden durch Attrappen ersetzt.
 import worker from '../worker/src/index.js';
-let lastClaudeBody = null;
+let lastClaudeBody = null, spotifyCalls = 0, spotifyBusy = false;
 globalThis.fetch = async (url, opts = {}) => {
   if (String(url).includes('api.spotify.com/v1/me')) {
+    spotifyCalls++;
+    if (spotifyBusy) return new Response(JSON.stringify({ error: { status: 429, reason: 'QUOTA_EXCEEDED' } }), { status: 429, headers: { 'Retry-After': '600' } });
     const ok = opts.headers.Authorization === 'Bearer gut';
     return new Response(JSON.stringify(ok ? { id: 'jannis' } : { error: {} }), { status: ok ? 200 : 401 });
   }
@@ -38,3 +40,13 @@ await show('Health', worker.fetch(new Request('https://w.dev/health', { headers:
 const kv = new Map(); const USAGE = { get: async (k) => kv.get(k) ?? null, put: async (k, v) => kv.set(k, v) };
 const lim = { ...env, USAGE, DAILY_LIMIT: '2' };
 for (let i = 1; i <= 3; i++) await show('Limit Anfrage ' + i, worker.fetch(req('gut'), lim));
+
+// Login-Gedächtnis: mehrere Anfragen mit demselben Login → nur eine Spotify-Prüfung
+spotifyCalls = 0;
+for (let i = 0; i < 5; i++) await worker.fetch(req('gut'), env);
+console.log('5 KI-Anfragen, Spotify-Prüfungen:'.padEnd(28), spotifyCalls, spotifyCalls === 0 || spotifyCalls === 1 ? '✓' : '✗');
+spotifyBusy = true; spotifyCalls = 0;
+await show('Spotify bremst (neuer Login)', worker.fetch(req('neu-xyz-1234567890'), env));
+await show('danach sofort nochmal', worker.fetch(req('neu-xyz-1234567890'), env));
+console.log('  Spotify-Anfragen dabei:', spotifyCalls, '(zweite wird gar nicht erst gestellt)');
+await show('bekannter Login geht weiter', worker.fetch(req('gut'), env));

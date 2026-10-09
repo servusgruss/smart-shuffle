@@ -17,7 +17,7 @@
  *   LASTFM_API_KEY     (Secret, optional) Schlüssel von last.fm/api für ähnliche Songs aus echten Hördaten
  */
 
-const VERSION = '2026-10-09.4';
+const VERSION = '2026-10-10.1';
 const MAX_TEXT = 400;
 const MAX_ARTISTS = 2500;
 const MAX_GENRES = 1200;
@@ -235,12 +235,45 @@ function keepKnown(values, known) {
   return [...new Set((values || []).map((v) => map.get(String(v).toLowerCase())).filter(Boolean))];
 }
 
-async function spotifyUser(authHeader) {
-  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+/* Login-Prüfung mit Gedächtnis: Ein einmal bei Spotify geprüfter Zugangsschlüssel wird 50 Minuten
+ * lang wiedererkannt (Spotify-Schlüssel gelten 60 Minuten). Das spart Spotify-Kontingent – vorher
+ * kostete jede KI-Anfrage eine Spotify-Anfrage. Gespeichert wird nur ein Hash des Schlüssels,
+ * nie der Schlüssel selbst. Gedächtnis im Arbeitsspeicher, zusätzlich in KV, falls USAGE verbunden ist. */
+const LOGIN_TTL_MS = 50 * 60 * 1000;
+const loginMemo = new Map();   // Hash → { id, exp }
+let spotifyBusyUntil = 0;      // Spotify hat gerade gebremst → eine Weile gar nicht erst fragen
+
+async function tokenHash(authHeader) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(authHeader));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function spotifyUser(env, authHeader) {
+  if (!authHeader || !authHeader.startsWith('Bearer ') || authHeader.length <= 7) return { error: 'invalid' };
+  const key = await tokenHash(authHeader);
+  const now = Date.now();
+  const hit = loginMemo.get(key);
+  if (hit && hit.exp > now) return { id: hit.id, cached: true };
+  if (env.USAGE) {
+    const id = await env.USAGE.get('tok:' + key);
+    if (id) { loginMemo.set(key, { id, exp: now + LOGIN_TTL_MS }); return { id, cached: true }; }
+  }
+  if (now < spotifyBusyUntil) return { error: 'busy', retryAfter: Math.ceil((spotifyBusyUntil - now) / 1000) };
+
   const res = await fetch('https://api.spotify.com/v1/me', { headers: { Authorization: authHeader } });
-  if (!res.ok) return null;
-  const me = await res.json();
-  return me && me.id ? me : null;
+  if (res.status === 429) {
+    const ra = Number(res.headers.get('Retry-After')) || 300;
+    spotifyBusyUntil = now + Math.min(ra, 3600) * 1000;
+    return { error: 'busy', retryAfter: ra };
+  }
+  if (!res.ok) return { error: 'invalid' };
+  const me = await res.json().catch(() => null);
+  if (!me?.id) return { error: 'invalid' };
+
+  loginMemo.set(key, { id: me.id, exp: now + LOGIN_TTL_MS });
+  if (loginMemo.size > 500) for (const [k, v] of loginMemo) if (v.exp <= now || loginMemo.size > 400) loginMemo.delete(k);
+  if (env.USAGE) await env.USAGE.put('tok:' + key, me.id, { expirationTtl: LOGIN_TTL_MS / 1000 });
+  return { id: me.id };
 }
 
 async function checkDailyLimit(env, userId) {
@@ -366,8 +399,11 @@ export default {
     if (!originOk) return json({ error: 'Diese Web-Adresse ist nicht freigegeben (ALLOWED_ORIGINS).' }, 403, cors);
     if (!env.ANTHROPIC_API_KEY) return json({ error: 'Auf dem Server fehlt der API-Schlüssel (ANTHROPIC_API_KEY).' }, 500, cors);
 
-    const me = await spotifyUser(request.headers.get('Authorization'));
-    if (!me) return json({ error: 'Spotify-Anmeldung ungültig – in der App neu anmelden.' }, 401, cors);
+    const me = await spotifyUser(env, request.headers.get('Authorization'));
+    if (me.error === 'busy') {
+      return json({ error: 'Spotify bremst gerade – dein Login kann nicht geprüft werden. Später nochmal versuchen.', retryAfter: me.retryAfter }, 503, cors);
+    }
+    if (me.error) return json({ error: 'Spotify-Anmeldung ungültig – in der App neu anmelden.' }, 401, cors);
     if (!list(env.ALLOWED_USERS).includes(me.id)) {
       return json({ error: `Dein Spotify-Konto ist für die KI nicht freigegeben. Trage „${me.id}“ in ALLOWED_USERS ein.`, userId: me.id }, 403, cors);
     }

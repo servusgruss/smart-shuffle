@@ -79,6 +79,9 @@ In der App steuern zwei Regler unter **Einstellungen → Neues entdecken**:
 ## Sicherheit
 - Nur Anfragen von der App-Adresse (`ALLOWED_ORIGINS`) werden angenommen
 - Jede Anfrage braucht einen gültigen Spotify-Login, und die Spotify-ID muss in `ALLOWED_USERS` stehen
+- Ein geprüfter Login wird 50 Minuten wiedererkannt (nur ein Hash, nie der Schlüssel selbst) –
+  so kostet nicht jede KI-Anfrage eine Spotify-Anfrage. Bremst Spotify, fragt der Worker eine
+  Weile gar nicht erst nach und meldet „Spotify bremst gerade“ (HTTP 503)
 - Die KI darf nur Interpreten und Genres zurückgeben, die wirklich in der Bibliothek stehen –
   alles andere filtert der Worker heraus
 - Es wird nichts gespeichert (außer dem Zähler fürs Tageslimit, falls aktiviert)
