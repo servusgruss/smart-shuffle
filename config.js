@@ -5,4 +5,7 @@
  */
 window.SMART_SHUFFLE_CONFIG = {
   clientId: '',
+  // Adresse des eigenen KI-Workers, z. B. 'https://smart-shuffle-ki.NAME.workers.dev'.
+  // Als Voreinstellung für alle Geräte; in der App pro Gerät änderbar.
+  kiUrl: '',
 };

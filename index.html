@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://api.spotify.com https://accounts.spotify.com; img-src 'self' data: https://i.scdn.co; style-src 'self'; script-src 'self'; base-uri 'self'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://api.spotify.com https://accounts.spotify.com https://*.workers.dev; img-src 'self' data: https://i.scdn.co; style-src 'self'; script-src 'self'; base-uri 'self'; form-action 'none'">
   <meta name="theme-color" content="#121212">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -89,6 +89,16 @@
       <button id="logoutBtn" hidden>Abmelden</button>
     </div>
 
+    <h3>KI</h3>
+    <label for="kiUrl">Adresse des KI-Servers</label>
+    <input id="kiUrl" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://smart-shuffle-ki.….workers.dev">
+    <p class="hint">Leer lassen = Wünsche werden nur auf dem Gerät erkannt (ohne Stimmungen).</p>
+    <p class="hint">Deine Spotify-ID für die Freigabeliste:</p>
+    <code id="spotifyId" class="copy" title="Antippen zum Kopieren">erst nach der Anmeldung</code>
+    <div class="row">
+      <button id="kiTestBtn">Verbindung testen</button>
+    </div>
+
     <h3>Bibliothek</h3>
     <p id="libInfo" class="hint">Noch nichts geladen.</p>
     <div class="row">
@@ -102,6 +112,7 @@
       <li data-check="tracks">Lieblingssongs</li>
       <li data-check="genres">Genres der Interpreten</li>
       <li data-check="speech">Spracheingabe</li>
+      <li data-check="ki">KI-Server</li>
       <li data-check="devices">Spotify-Gerät</li>
       <li data-check="play">Wiedergabe</li>
     </ul>

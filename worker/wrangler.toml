@@ -1,0 +1,20 @@
+# Cloudflare Worker für die KI-Funktion von Smart Shuffle
+name = "smart-shuffle-ki"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+# Variablen, die im Dashboard gesetzt wurden (z. B. ALLOWED_USERS), bei jedem
+# Deploy aus GitHub behalten statt überschreiben.
+keep_vars = true
+
+[vars]
+ALLOWED_ORIGINS = "https://servusgruss.github.io"
+MODEL = "claude-haiku-5-5"
+DAILY_LIMIT = "200"
+
+# Optional: Tageslimit pro Person aktivieren.
+# 1. Im Dashboard unter Storage & Databases → KV einen Namespace „smart-shuffle-usage“ anlegen
+# 2. Die Zeilen unten einkommentieren und die ID eintragen
+# [[kv_namespaces]]
+# binding = "USAGE"
+# id = "HIER_DIE_KV_ID"

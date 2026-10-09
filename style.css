@@ -101,6 +101,8 @@ h2 span { color: var(--muted); font-weight: 400; }
   font-size: 13px; padding: 4px 10px; border-radius: var(--radius);
   background: var(--surface-2); color: var(--ink);
 }
+.tag.ki { background: var(--accent); color: var(--on-accent); font-weight: 700; }
+.parsed.busy { opacity: .5; }
 .tag.out { text-decoration: line-through; color: var(--muted); }
 .tag small { color: var(--muted); }
 

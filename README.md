@@ -20,6 +20,9 @@ App: `https://servusgruss.github.io/smart-shuffle/`
   „Smart Shuffle“ geschrieben (bei jedem Abspielen überschrieben) und von dort gestartet
 - **Merkt sich alles auf dem Gerät:** Login, Client ID, Bibliothek, Genres, Design und
   letzten Wunsch. Beim Öffnen werden nur neu gespeicherte Songs nachgeladen.
+- **KI (optional):** versteht auch Stimmungen und Anlässe („was Ruhiges zum Kochen“) über einen
+  eigenen Cloudflare Worker mit Claude – Einrichtung in [`worker/README.md`](worker/README.md).
+  Ohne KI läuft die Erkennung komplett auf dem Gerät.
 - **5 Designs** (Einstellungen → Design): Grün (Spotify-Stil), Weiß, Schwarz, Nebel, Vinyl
 - **Als App auf den Home-Bildschirm** legbar (eigenes Icon, Vollbild)
 
@@ -48,6 +51,8 @@ Mode sind auf wenige Nutzer begrenzt – für privaten Gebrauch reicht das.
 - Rechte: Profil lesen, Lieblingssongs lesen, Wiedergabe steuern, *eigene private*
   Playlist anlegen/befüllen. Kein Löschen, keine Käufe.
 - Content-Security-Policy: Die Seite lädt keine fremden Skripte und spricht nur mit Spotify
+  und dem eigenen KI-Worker (`*.workers.dev`)
+- Der KI-Schlüssel liegt nur im Worker, nie auf einem Gerät
 - Zugriff jederzeit entziehen: spotify.com → Konto → Apps
 
 ## Dateien
@@ -57,8 +62,9 @@ Mode sind auf wenige Nutzer begrenzt – für privaten Gebrauch reicht das.
 | `style.css` | Layout und die 5 Designs (nur Farb-/Schrift-Tokens je Design) |
 | `app.js` | Login, Spotify-API, Zwischenspeicher, Quellen, Shuffle, Wiedergabe, Sprache |
 | `match.js` | Wunsch-Zerlegung und unscharfe Zuordnung zu Interpreten/Genres |
-| `config.js` | optionale feste Client ID |
-| `test/match.test.js` | Tests für die Namenserkennung (`node test/match.test.js`) |
+| `config.js` | optionale Voreinstellungen (Client ID, KI-Adresse) |
+| `worker/` | KI-Worker für Cloudflare (eigene Anleitung) |
+| `test/` | Tests: Namenserkennung (`node test/match.test.js`), Worker (`node test/worker.test.mjs`) |
 
 ## Erweiterbar
 Weitere Quellen (eigene Playlists, gespeicherte Alben) werden in `app.js` unter `SOURCES`
@@ -66,7 +72,10 @@ ergänzt. Hinweis: Spotify liefert Playlist-Inhalte seit 2026 nur noch für eige
 gemeinsame Playlists.
 
 ## Bekannte Grenzen
-- Stimmungen („ruhig“, „zum Feiern“) versteht die App noch nicht – Spotify gibt neuen Apps
-  keine Audio-Merkmale mehr. Dafür ist eine KI-Anbindung geplant.
+- Stimmungen erkennt die KI über Genres und bekannte Interpreten, nicht pro einzelnem Song
+  (Spotify gibt neuen Apps keine Audio-Merkmale mehr).
+
+## Offene Punkte
+- Client ID als Voreinstellung in `config.js`, damit Freunde nur den Link öffnen und sich anmelden
 - Genres lädt Spotify nur einzeln pro Interpret; beim ersten Start dauert das im
   Hintergrund ein paar Minuten, danach sind sie gespeichert.

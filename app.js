@@ -169,6 +169,7 @@ function clearUserData() {
   store.del('playlistId');
   store.del('me');
   settings.query = '';
+  settings.ki = null;
   saveSettings();
   $('query').value = '';
   tracks = []; queue = [];
@@ -346,15 +347,106 @@ async function loadMissingGenres() {
 }
 
 /* ---------- Kriterien ---------- */
-function currentCriteria() {
-  const q = Matcher.parseQuery($('query').value);
-  const count = q.count || (settings.count === 'all' ? Infinity : Number(settings.count));
+const chipCount = () => (settings.count === 'all' ? Infinity : Number(settings.count));
+
+/* Ergebnis der KI gilt, solange der Wunsch-Text unverändert ist. */
+function kiCriteria() {
+  const ki = settings.ki;
+  if (!ki || ki.query !== $('query').value.trim()) return null;
+  const f = ki.filter;
+  const artist = (name) => ({ type: 'artist', label: name, values: [Matcher.normalize(name)], fixed: false, term: name });
+  const genre = (g) => ({ type: 'genre', label: g, values: [g], fixed: false, term: g });
+  const text = (w) => ({ type: 'text', label: w, values: [Matcher.normalize(w)], fixed: false, term: w });
   return {
-    count,
+    fromKi: true,
+    summary: f.summary,
+    count: f.count === null || f.count === undefined ? chipCount() : f.count === 0 ? Infinity : f.count,
+    countFromVoice: f.count !== null && f.count !== undefined,
+    include: [...f.include_artists.map(artist), ...f.include_genres.map(genre), ...(f.title_keywords || []).map(text)],
+    exclude: [...f.exclude_artists.map(artist), ...f.exclude_genres.map(genre)],
+  };
+}
+function currentCriteria() {
+  const fromKi = kiCriteria();
+  if (fromKi) return fromKi;
+  const q = Matcher.parseQuery($('query').value);
+  return {
+    count: q.count || chipCount(),
     countFromVoice: !!q.count,
     include: q.include.map((t) => ({ term: t, ...Matcher.resolveTerm(t, index) })),
     exclude: q.exclude.map((t) => ({ term: t, ...Matcher.resolveTerm(t, index) })),
   };
+}
+
+/* ---------- KI ---------- */
+function kiUrl() {
+  const u = (store.get('kiUrl') ?? window.SMART_SHUFFLE_CONFIG?.kiUrl ?? '').trim().replace(/\/+$/, '');
+  return /^https:\/\//.test(u) ? u : '';
+}
+function libraryForKi() {
+  const freq = new Map();
+  for (const t of tracks) for (const a of t.artists) freq.set(a.name, (freq.get(a.name) || 0) + 1);
+  const artists = [...freq.keys()].sort((a, b) => freq.get(b) - freq.get(a)).slice(0, 2500);
+  const ids = new Set(tracks.flatMap((t) => t.artists.map((a) => a.id)));
+  const gs = new Set();
+  for (const id of ids) for (const g of genres[id] || []) gs.add(g);
+  return { artists, genres: [...gs].slice(0, 800) };
+}
+let kiBusy = false;
+/* Fragt die KI, wenn ein Server eingetragen ist; sonst (oder bei Fehlern) bleibt die Erkennung auf dem Gerät. */
+async function interpretWithKi(text) {
+  const url = kiUrl();
+  if (!url || !text || !tracks.length || kiBusy) return false;
+  if (settings.ki && settings.ki.query === text) return true;
+  kiBusy = true;
+  $('parsed').classList.add('busy');
+  toast('KI versteht deinen Wunsch …');
+  try {
+    const res = await fetch(url + '/interpret', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (await getAccessToken()) },
+      body: JSON.stringify({ text, ...libraryForKi() }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    settings.ki = { query: text, filter: data.filter };
+    saveSettings();
+    check('ki', 'ok', 'zuletzt: ' + (data.filter.summary || 'verstanden'));
+    if (data.usage) log(`KI: ${data.usage.input} Tokens rein (${data.usage.cached} aus Cache), ${data.usage.output} raus.`);
+    toast(data.filter.summary || '');
+    return true;
+  } catch (e) {
+    check('ki', 'fail', e.message);
+    toast('KI nicht erreichbar, nutze Erkennung auf dem Gerät. (' + e.message + ')', true);
+    return false;
+  } finally {
+    kiBusy = false;
+    $('parsed').classList.remove('busy');
+  }
+}
+/* Wunsch übernehmen: speichern, KI fragen (falls eingerichtet), mischen. */
+async function commitQuery() {
+  const text = $('query').value.trim();
+  settings.query = text;
+  saveSettings();
+  makeShuffle();                       // sofort: Vorschau mit der Erkennung auf dem Gerät
+  if (text && await interpretWithKi(text)) makeShuffle();
+}
+async function testKi() {
+  const url = kiUrl();
+  if (!url) { check('ki', 'fail', 'Keine Adresse eingetragen (muss mit https:// beginnen)'); return; }
+  check('ki', 'wait');
+  try {
+    const res = await fetch(url + '/health');
+    const h = await res.json();
+    const problems = [];
+    if (!h.apiKey) problems.push('API-Schlüssel fehlt');
+    if (!h.allowedUsers) problems.push('Freigabeliste leer');
+    if (problems.length) { check('ki', 'fail', 'Erreichbar, aber: ' + problems.join(', ')); return; }
+    check('ki', 'ok', `erreichbar · ${h.model}${h.dailyLimit ? ' · Limit ' + h.dailyLimit + '/Tag' : ''}`);
+  } catch (e) {
+    check('ki', 'fail', 'Nicht erreichbar: ' + e.message);
+  }
 }
 function showParsed() {
   const c = currentCriteria();
@@ -364,6 +456,7 @@ function showParsed() {
     return `<span class="tag${out ? ' out' : ''}">${escapeHtml(r.label)}${fixed}${kind}</span>`;
   };
   const parts = [];
+  if (c.fromKi) parts.push('<span class="tag ki">KI</span>');
   if (c.countFromVoice) parts.push(`<span class="tag">${c.count === Infinity ? 'Alle' : 'Letzte ' + c.count}</span>`);
   parts.push(...c.include.map((r) => tag(r, false)), ...c.exclude.map((r) => tag(r, true)));
   $('parsed').innerHTML = parts.join('');
@@ -499,7 +592,7 @@ function setupSpeech() {
   rec.onend = () => {
     listening = false;
     $('micBtn').classList.remove('listening');
-    if (heard) { settings.query = heard; saveSettings(); makeShuffle(); toast(''); }
+    if (heard) { toast(''); commitQuery(); }
     else toast('Nichts verstanden – nochmal versuchen.', true);
   };
   rec.onresult = (ev) => {
@@ -539,6 +632,7 @@ async function loadProfile() {
       log('Neue Person angemeldet – vorherige Bibliothek entfernt.');
     }
     store.set('me', { id: me.id, name: me.display_name });
+    $('spotifyId').textContent = me.id;
     const premium = me.product === 'premium';
     check('auth', 'ok');
     check('profile', premium ? 'ok' : 'fail', `${me.display_name || me.id} · ${premium ? 'Premium' : 'kein Premium – Abspielen nicht möglich'}`);
@@ -566,6 +660,11 @@ async function init() {
   $('loginBtn').addEventListener('click', login);
   $('logoutBtn').addEventListener('click', logout);
   $('reloadBtn').addEventListener('click', () => syncLibrary(true));
+  $('kiUrl').value = store.get('kiUrl') ?? window.SMART_SHUFFLE_CONFIG?.kiUrl ?? '';
+  $('kiUrl').addEventListener('change', () => { store.set('kiUrl', $('kiUrl').value.trim()); settings.ki = null; saveSettings(); testKi(); });
+  $('kiTestBtn').addEventListener('click', testKi);
+  $('spotifyId').addEventListener('click', () => me && navigator.clipboard?.writeText(me.id).then(() => toast('Spotify-ID kopiert.')));
+  if (kiUrl()) check('ki', '', 'eingerichtet'); else check('ki', '', 'nicht eingerichtet – Erkennung nur auf dem Gerät');
   $('settingsBtn').addEventListener('click', () => $('settings').showModal());
   $('closeSettings').addEventListener('click', () => $('settings').close());
   $('settings').addEventListener('click', (e) => { if (e.target === $('settings')) $('settings').close(); });
@@ -582,9 +681,10 @@ async function init() {
   $('query').addEventListener('input', () => {
     showParsed();
     clearTimeout(typing);
-    typing = setTimeout(() => { settings.query = $('query').value; saveSettings(); makeShuffle(); }, 500);
+    typing = setTimeout(makeShuffle, 500);        // Vorschau beim Tippen, KI erst beim Bestätigen
   });
-  $('query').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('query').blur(); makeShuffle(); } });
+  $('query').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('query').blur(); } });
+  $('query').addEventListener('blur', () => { clearTimeout(typing); if ($('query').value.trim() !== settings.query || !settings.ki) commitQuery(); });
   setupSpeech();
 
   await handleRedirect();
