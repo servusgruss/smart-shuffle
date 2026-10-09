@@ -93,19 +93,36 @@
   const NEGATIVE = /\b(ohne|kein|keine|keinen|keinem|keiner|nicht|ausser|außer|bloss kein|bloß kein)\b/;
   const FILLER = /\b(songs?|lieder?|liedern|titel|tracks?|musik|bitte|spiel(e|t)?|abspielen|mische?n?|mir|mal|nur|von|vom|mit|ohne|keine[nmr]?|kein|nicht|ausser|außer|etwas|was|shuffle|shuffel|aus|meine[nm]?|gespeicherten|lieblingssongs|lieblingslieder|letzten|neuesten|alle[ns]?|ich|will|möchte|moechte|hören|hoeren|gerne?|bisschen|\d+|zehn|zwanzig|dreißig|dreissig|vierzig|fünfzig|fuenfzig|hundert|einhundert|zweihundert|dreihundert|fünfhundert|fuenfhundert)\b/g;
 
+  /* Jahrzehnte und Jahre: „90er“, „1990er“, „2000ern“, „Nuller“, „aus 1995“ */
+  function parseYears(lower) {
+    let m = lower.match(/\b(19|20)(\d)0er(?:n|jahre[n]?)?\b/);
+    if (m) { const from = Number(m[1] + m[2] + '0'); return { from, to: from + 9, label: m[0] }; }
+    m = lower.match(/\b(\d)0er(?:n|jahre[n]?)?\b/);
+    if (m) { const d = Number(m[1]); const from = (d >= 3 ? 1900 : 2000) + d * 10; return { from, to: from + 9, label: m[0] }; }
+    if (/\bnuller\b/.test(lower)) return { from: 2000, to: 2009, label: 'nuller' };
+    m = lower.match(/\b(19[5-9]\d|20[0-4]\d)\b/);
+    if (m && !/(letzten|neuesten)\s+\d/.test(lower)) return { from: Number(m[1]), to: Number(m[1]), label: m[1] };
+    return null;
+  }
+  const YEAR_WORDS = /\b((19|20)?\d0er(n|jahre[n]?)?|nuller(jahre[n]?)?|jahre[n]?|jahrzehnts?|19[5-9]\d|20[0-4]\d)\b/g;
+
   function parseQuery(text) {
-    const result = { include: [], exclude: [], count: null };
+    const result = { include: [], exclude: [], count: null, years: null };
     const lower = String(text || '').toLowerCase();
     const n = lower.match(/(?:letzten|neuesten)\s+(\d+|[a-zäöüß]+)/);
     if (n) result.count = /^\d+$/.test(n[1]) ? Number(n[1]) : NUMBER_WORDS[n[1]] || null;
     if (/\balle[ns]?\b/.test(lower) && !n) result.count = Infinity;
+    result.years = parseYears(lower);
     for (const clause of lower.split(/,|;|\bund\b|\baber\b|\bsowie\b|\boder\b/)) {
       const negative = NEGATIVE.test(clause);
       const term = clause
+        .replace(YEAR_WORDS, ' ')
         .replace(/\b(die|der|das|den|dem|des)\b(?=.*\b(songs?|lieder|musik)\b)/g, ' ') // „die Songs von …“
         .replace(FILLER, ' ')
+        .replace(/\b(aus|in|von|den|dem|der|des|die|das)\b/g, ' ')
         .replace(/[„“"'.!?]/g, ' ').replace(/\s+/g, ' ').trim()
-        .replace(/^(den|dem|der|die|das|des)\s+/, '');
+        .replace(/^(den|dem|der|die|das|des)\s+/, '')
+        .replace(/^([a-zäöüß]{3,})(musik|songs?|lieder)$/, '$1');   // „Rockmusik“ → „rock“
       if (!term || term.length < 2) continue;
       (negative ? result.exclude : result.include).push(term);
     }

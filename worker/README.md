@@ -1,7 +1,9 @@
 # KI-Worker für Smart Shuffle
 
 Kleiner Mittelsmann auf Cloudflare: nimmt Sprachwünsche aus der App entgegen, prüft den
-Spotify-Login und die Freigabeliste und fragt Claude (Haiku 5.5). Der API-Schlüssel liegt nur
+Spotify-Login und die Freigabeliste und fragt Claude (Haiku 5.5). Außerdem ordnet er einmalig
+alle Interpreten der Bibliothek ihren Genres zu (`/tag-artists`), weil Spotify das bei großen
+Bibliotheken nur sehr langsam liefert. Der API-Schlüssel liegt nur
 hier als Secret, nie auf einem Handy und nie im Repo.
 
 ```
@@ -51,6 +53,7 @@ als Voreinstellung eingetragen werden.
 ## Kosten
 - **Cloudflare:** kostenlos (Free-Plan: 100.000 Anfragen pro Tag; die Wartezeit auf Claude
   zählt nicht zur Rechenzeit)
+- **Genre-Zuordnung:** einmalig pro Interpret, bei ~2.000 Interpreten grob ein paar Cent
 - **Claude Haiku 5.5:** pro Sprachbefehl wird die Interpreten- und Genreliste mitgeschickt.
   Bei ~1.000 Interpreten grob ein Bruchteil eines Cents pro Befehl; die Liste wird zwischengespeichert
   (Prompt Caching), wiederholte Befehle kurz hintereinander sind günstiger.

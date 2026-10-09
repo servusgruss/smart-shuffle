@@ -1,10 +1,11 @@
 /* Smart Shuffle – KI-Worker (Cloudflare Workers)
  *
  * Mittelsmann zwischen App und Claude-API:
- *   App → POST /interpret  (Spotify-Token im Authorization-Header)
- *       → Worker prüft Herkunft, Spotify-Login, Freigabeliste und Tageslimit
- *       → Worker fragt Claude (API-Schlüssel liegt nur hier als Secret)
- *       → gibt Filter zurück: Interpreten, Genres, Stichwörter, Anzahl
+ *   POST /interpret    Sprachwunsch → Filter (Interpreten, Genres, Jahre, Anzahl)
+ *   POST /tag-artists  Interpretennamen → Genres (einmalig, die App speichert das Ergebnis)
+ *   GET  /health       Zustand der Einrichtung
+ * Jede POST-Anfrage braucht einen gültigen Spotify-Login (Authorization-Header),
+ * und die Spotify-ID muss in ALLOWED_USERS stehen.
  *
  * Einstellungen (Cloudflare → Worker → Settings → Variables and Secrets):
  *   ANTHROPIC_API_KEY  (Secret, Pflicht)  API-Schlüssel aus der Anthropic Console
@@ -14,12 +15,14 @@
  *   DAILY_LIMIT        (optional)         KI-Anfragen pro Person und Tag, Standard 200 (nur mit KV-Bindung USAGE)
  */
 
-const VERSION = '2026-10-09.2';
+const VERSION = '2026-10-09.3';
 const MAX_TEXT = 400;
 const MAX_ARTISTS = 2500;
-const MAX_GENRES = 800;
+const MAX_GENRES = 1200;
+const TAG_BATCH = 150;
 
-const TOOL = {
+/* ---------- Wunsch → Filter ---------- */
+const FILTER_TOOL = {
   name: 'set_shuffle_filter',
   description: 'Setzt die Filter für den Shuffle über die Lieblingssongs der Person.',
   input_schema: {
@@ -30,24 +33,59 @@ const TOOL = {
       include_genres: { type: 'array', items: { type: 'string' }, description: 'Genres, die gespielt werden sollen. Nur exakte Einträge aus der Genreliste.' },
       exclude_genres: { type: 'array', items: { type: 'string' }, description: 'Genres, die ausgeschlossen werden. Nur exakte Einträge aus der Genreliste.' },
       title_keywords: { type: 'array', items: { type: 'string' }, description: 'Nur wenn ausdrücklich nach Wörtern im Songtitel gefragt wird.' },
+      year_from: { type: ['integer', 'null'], description: 'Frühestes Erscheinungsjahr, z. B. „90er“ → 1990. null = keine Einschränkung.' },
+      year_to: { type: ['integer', 'null'], description: 'Spätestes Erscheinungsjahr, z. B. „90er“ → 1999. null = keine Einschränkung.' },
       count: { type: ['integer', 'null'], description: 'Anzahl der zuletzt gespeicherten Songs, wenn genannt („die letzten 50“ → 50). 0 = ausdrücklich alle. null = nicht erwähnt.' },
       summary: { type: 'string', description: 'Sehr kurze deutsche Bestätigung, was gespielt wird (max. 10 Wörter).' },
     },
-    required: ['include_artists', 'exclude_artists', 'include_genres', 'exclude_genres', 'count', 'summary'],
+    required: ['include_artists', 'exclude_artists', 'include_genres', 'exclude_genres', 'year_from', 'year_to', 'count', 'summary'],
   },
 };
 
-const INSTRUCTIONS = `Du übersetzt einen gesprochenen deutschen Musikwunsch in Filter für einen Shuffle über die Lieblingssongs einer Person.
+const FILTER_INSTRUCTIONS = `Du übersetzt einen gesprochenen deutschen Musikwunsch in Filter für einen Shuffle über die Lieblingssongs einer Person.
 Der Text stammt aus einer Spracherkennung und enthält oft falsch geschriebene Namen („Kraft Club“ = Kraftklub, „Billy Eilish“ = Billie Eilish).
 
 Regeln:
 - Interpreten: nur exakte Namen aus der Interpretenliste unten. Ordne Hörfehler dem gemeinten Interpreten zu.
-- Genres: nur exakte Einträge aus der Genreliste unten. Übersetze allgemeine Begriffe („Rap“, „Elektro“, „Deutschpop“) in alle passenden Genres der Liste.
-- Stimmungen und Anlässe („was Ruhiges“, „zum Feiern“, „zum Joggen“, „zum Einschlafen“): wähle passende Genres aus der Liste und zusätzlich Interpreten aus der Liste, die du sicher als passend kennst.
-- Ein Song wird gespielt, wenn er zu IRGENDEINEM Einschluss passt und zu KEINEM Ausschluss. Leere Einschlusslisten bedeuten: alle Songs.
+- Genres: nur exakte Einträge aus der Genreliste unten. Übersetze allgemeine Begriffe („Rock“, „Rap“, „Elektro“, „Deutschpop“) in ALLE passenden Genres der Liste (bei „Rock“ z. B. auch alternative rock, hard rock, indie rock, punk rock …).
+- Die Genreliste kann lückenhaft sein. Wähle deshalb bei Genre-, Stimmungs- und Anlasswünschen zusätzlich großzügig ALLE Interpreten aus der Liste, die nach deinem Wissen eindeutig passen – das dürfen auch viele sein.
+- Stimmungen und Anlässe („was Ruhiges“, „zum Feiern“, „zum Joggen“, „zum Einschlafen“): passende Genres plus passende Interpreten.
+- Jahrzehnte und Jahre („90er“, „aus den 2000ern“, „Songs von 1995“) → year_from / year_to. Das Jahrzehnt allein ist KEIN Genre und kein Interpret.
+- Ein Song wird gespielt, wenn er zu IRGENDEINEM Einschluss passt, zu KEINEM Ausschluss und im Jahresbereich liegt. Leere Einschlusslisten bedeuten: alle Songs (nur Jahre/Ausschlüsse gelten).
 - „ohne“, „kein“, „nicht“, „außer“ → Ausschlüsse.
-- Erfinde nichts, was nicht in den Listen steht. Im Zweifel lieber weniger Filter.
+- Erfinde nichts, was nicht in den Listen steht.
 - Antworte ausschließlich über das Werkzeug set_shuffle_filter.`;
+
+/* ---------- Interpreten → Genres ---------- */
+const TAG_TOOL = {
+  name: 'set_artist_genres',
+  description: 'Ordnet jedem nummerierten Interpreten seine Genres zu.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      artists: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            i: { type: 'integer', description: 'Nummer des Interpreten aus der Liste' },
+            g: { type: 'array', items: { type: 'string' }, description: '1–4 Genres, klein geschrieben; leer, wenn unbekannt' },
+          },
+          required: ['i', 'g'],
+        },
+      },
+    },
+    required: ['artists'],
+  },
+};
+
+const TAG_INSTRUCTIONS = `Ordne jedem Interpreten der nummerierten Liste 1 bis 4 Genres zu – so, wie Spotify Genres benennt:
+englisch, klein geschrieben, vom Allgemeinen zum Speziellen, z. B. „rock“, „alternative rock“, „pop“, „german pop“,
+„hip hop“, „german hip hop“, „indie“, „indie rock“, „electronic“, „techno“, „house“, „schlager“, „metal“, „punk“,
+„r&b“, „soul“, „jazz“, „classical“, „singer-songwriter“, „acoustic“, „ambient“, „latin“, „reggaeton“, „country“, „folk“.
+Nimm immer auch das Hauptgenre mit (bei „german hip hop“ zusätzlich „hip hop“; bei „indie rock“ zusätzlich „rock“).
+Kennst du einen Interpreten nicht sicher, gib eine leere Liste zurück. Rate nicht.
+Antworte ausschließlich über das Werkzeug set_artist_genres und gib für JEDE Nummer einen Eintrag zurück.`;
 
 /* ---------- Hilfen ---------- */
 function corsHeaders(origin) {
@@ -65,6 +103,7 @@ function json(body, status, cors) {
 const list = (v) => String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
 const cleanStrings = (arr, max, maxLen = 120) =>
   Array.isArray(arr) ? [...new Set(arr.filter((s) => typeof s === 'string').map((s) => s.trim().slice(0, maxLen)).filter(Boolean))].slice(0, max) : [];
+const intOrNull = (v, min, max) => (Number.isInteger(v) && v >= min && v <= max ? v : null);
 
 /* Nur zurückgeben, was wirklich in der Bibliothek vorkommt (Groß-/Kleinschreibung egal). */
 function keepKnown(values, known) {
@@ -90,8 +129,7 @@ async function checkDailyLimit(env, userId) {
   return { ok: true, used: used + 1, limit };
 }
 
-async function askClaude(env, text, artists, genres) {
-  const library = `Interpretenliste (${artists.length}):\n${artists.join('\n')}\n\nGenreliste (${genres.length}):\n${genres.join('\n') || '(keine Genres bekannt)'}`;
+async function callClaude(env, { system, tool, user, maxTokens }) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -101,16 +139,13 @@ async function askClaude(env, text, artists, genres) {
     },
     body: JSON.stringify({
       model: env.MODEL || 'claude-haiku-5-5',
-      max_tokens: 1024,
+      max_tokens: maxTokens,
       thinking: { type: 'disabled' },
       output_config: { effort: 'low' },
-      system: [
-        { type: 'text', text: INSTRUCTIONS },
-        { type: 'text', text: library, cache_control: { type: 'ephemeral' } }, // Bibliothek ändert sich selten → günstiger
-      ],
-      tools: [TOOL],
-      tool_choice: { type: 'tool', name: TOOL.name },
-      messages: [{ role: 'user', content: `Wunsch: ${text}` }],
+      system,
+      tools: [tool],
+      tool_choice: { type: 'tool', name: tool.name },
+      messages: [{ role: 'user', content: user }],
     }),
   });
   const data = await res.json().catch(() => null);
@@ -118,9 +153,65 @@ async function askClaude(env, text, artists, genres) {
     const msg = data?.error?.message || `HTTP ${res.status}`;
     throw Object.assign(new Error('KI-Fehler: ' + msg), { status: 502 });
   }
-  const call = (data.content || []).find((c) => c.type === 'tool_use' && c.name === TOOL.name);
+  const call = (data.content || []).find((c) => c.type === 'tool_use' && c.name === tool.name);
   if (!call) throw Object.assign(new Error('KI hat kein Ergebnis geliefert'), { status: 502 });
-  return { input: call.input, usage: data.usage };
+  const u = data.usage || {};
+  return { input: call.input, usage: { input: u.input_tokens, output: u.output_tokens, cached: u.cache_read_input_tokens || 0 } };
+}
+
+/* ---------- Endpunkte ---------- */
+async function interpret(env, body) {
+  const text = String(body.text || '').trim().slice(0, MAX_TEXT);
+  if (!text) throw Object.assign(new Error('Kein Wunsch übermittelt'), { status: 400 });
+  const artists = cleanStrings(body.artists, MAX_ARTISTS);
+  const genres = cleanStrings(body.genres, MAX_GENRES, 80);
+  const library = `Interpretenliste (${artists.length}):\n${artists.join('\n')}\n\nGenreliste (${genres.length}):\n${genres.join('\n') || '(keine Genres bekannt)'}`;
+  const { input, usage } = await callClaude(env, {
+    system: [
+      { type: 'text', text: FILTER_INSTRUCTIONS },
+      { type: 'text', text: library, cache_control: { type: 'ephemeral' } }, // Bibliothek ändert sich selten → günstiger
+    ],
+    tool: FILTER_TOOL,
+    user: `Wunsch: ${text}`,
+    maxTokens: 4096,
+  });
+  let yearFrom = intOrNull(input.year_from, 1900, 2100);
+  let yearTo = intOrNull(input.year_to, 1900, 2100);
+  if (yearFrom && yearTo && yearFrom > yearTo) [yearFrom, yearTo] = [yearTo, yearFrom];
+  return {
+    filter: {
+      include_artists: keepKnown(input.include_artists, artists),
+      exclude_artists: keepKnown(input.exclude_artists, artists),
+      include_genres: keepKnown(input.include_genres, genres),
+      exclude_genres: keepKnown(input.exclude_genres, genres),
+      title_keywords: cleanStrings(input.title_keywords, 10, 60),
+      year_from: yearFrom,
+      year_to: yearTo,
+      count: intOrNull(input.count, 0, 100000),
+      summary: String(input.summary || '').slice(0, 120),
+    },
+    usage,
+  };
+}
+
+async function tagArtists(env, body) {
+  const artists = cleanStrings(body.artists, TAG_BATCH);
+  if (!artists.length) throw Object.assign(new Error('Keine Interpreten übermittelt'), { status: 400 });
+  const numbered = artists.map((a, i) => `${i + 1}. ${a}`).join('\n');
+  const { input, usage } = await callClaude(env, {
+    system: [{ type: 'text', text: TAG_INSTRUCTIONS }],
+    tool: TAG_TOOL,
+    user: numbered,
+    maxTokens: 8192,
+  });
+  const tags = {};
+  for (const row of Array.isArray(input.artists) ? input.artists : []) {
+    const idx = Number(row.i) - 1;
+    if (idx >= 0 && idx < artists.length) {
+      tags[artists[idx]] = cleanStrings(row.g, 4, 40).map((g) => g.toLowerCase());
+    }
+  }
+  return { tags, usage };
 }
 
 /* ---------- Einstieg ---------- */
@@ -141,17 +232,18 @@ export default {
         allowedUsers: list(env.ALLOWED_USERS).length,
         dailyLimit: env.USAGE ? Number(env.DAILY_LIMIT || 200) : null,
         model: env.MODEL || 'claude-haiku-5-5',
-      }, 200, cors);
+      }, 200, { ...cors, 'Cache-Control': 'no-store' });
     }
 
-    if (url.pathname !== '/interpret' || request.method !== 'POST') return json({ error: 'Nicht gefunden' }, 404, cors);
+    const routes = { '/interpret': interpret, '/tag-artists': tagArtists };
+    const handler = routes[url.pathname];
+    if (!handler || request.method !== 'POST') return json({ error: 'Nicht gefunden' }, 404, cors);
     if (!originOk) return json({ error: 'Diese Web-Adresse ist nicht freigegeben (ALLOWED_ORIGINS).' }, 403, cors);
     if (!env.ANTHROPIC_API_KEY) return json({ error: 'Auf dem Server fehlt der API-Schlüssel (ANTHROPIC_API_KEY).' }, 500, cors);
 
     const me = await spotifyUser(request.headers.get('Authorization'));
     if (!me) return json({ error: 'Spotify-Anmeldung ungültig – in der App neu anmelden.' }, 401, cors);
-    const allowed = list(env.ALLOWED_USERS);
-    if (!allowed.includes(me.id)) {
+    if (!list(env.ALLOWED_USERS).includes(me.id)) {
       return json({ error: `Dein Spotify-Konto ist für die KI nicht freigegeben. Trage „${me.id}“ in ALLOWED_USERS ein.`, userId: me.id }, 403, cors);
     }
 
@@ -160,26 +252,8 @@ export default {
 
     let body;
     try { body = await request.json(); } catch { return json({ error: 'Ungültige Anfrage' }, 400, cors); }
-    const text = String(body.text || '').trim().slice(0, MAX_TEXT);
-    if (!text) return json({ error: 'Kein Wunsch übermittelt' }, 400, cors);
-    const artists = cleanStrings(body.artists, MAX_ARTISTS);
-    const genres = cleanStrings(body.genres, MAX_GENRES, 80);
-
     try {
-      const { input, usage } = await askClaude(env, text, artists, genres);
-      const count = Number.isInteger(input.count) && input.count >= 0 ? input.count : null;
-      return json({
-        filter: {
-          include_artists: keepKnown(input.include_artists, artists),
-          exclude_artists: keepKnown(input.exclude_artists, artists),
-          include_genres: keepKnown(input.include_genres, genres),
-          exclude_genres: keepKnown(input.exclude_genres, genres),
-          title_keywords: cleanStrings(input.title_keywords, 10, 60),
-          count,
-          summary: String(input.summary || '').slice(0, 120),
-        },
-        usage: usage ? { input: usage.input_tokens, output: usage.output_tokens, cached: usage.cache_read_input_tokens || 0 } : null,
-      }, 200, cors);
+      return json(await handler(env, body), 200, cors);
     } catch (e) {
       return json({ error: e.message }, e.status || 500, cors);
     }

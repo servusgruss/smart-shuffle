@@ -8,9 +8,14 @@ globalThis.fetch = async (url, opts = {}) => {
   }
   if (String(url).includes('api.anthropic.com')) {
     lastClaudeBody = JSON.parse(opts.body);
+    if (lastClaudeBody.tool_choice.name === 'set_artist_genres') {
+      return new Response(JSON.stringify({ content: [{ type: 'tool_use', name: 'set_artist_genres', input: {
+        artists: [{ i: 1, g: ['German Indie', 'indie', 'rock'] }, { i: 2, g: ['hip hop'] }, { i: 99, g: ['quatsch'] }] } }],
+        usage: { input_tokens: 500, output_tokens: 80 } }), { status: 200 });
+    }
     return new Response(JSON.stringify({ content: [{ type: 'tool_use', name: 'set_shuffle_filter', input: {
       include_artists: ['kraftklub', 'Erfundene Band'], exclude_artists: [], include_genres: ['german indie', 'quatsch'],
-      exclude_genres: ['german hip hop'], count: 50, summary: 'Kraftklub und Indie, ohne Rap' } }],
+      exclude_genres: ['german hip hop'], year_from: 1999, year_to: 1990, count: 50, summary: 'Kraftklub und Indie, ohne Rap' } }],
       usage: { input_tokens: 900, output_tokens: 60 } }), { status: 200 });
   }
   throw new Error('unerwartet: ' + url);
@@ -22,6 +27,7 @@ const req = (auth, origin = O, body = { text: 'die letzten 50 von kraft club und
 const show = async (name, p) => { const r = await p; console.log(name.padEnd(28), r.status, (await r.text()).slice(0, 220)); };
 await show('OK', worker.fetch(req('gut'), env));
 console.log('  Modell/Thinking/Tool:', lastClaudeBody.model, JSON.stringify(lastClaudeBody.thinking), lastClaudeBody.tool_choice.name);
+await show('Genres zuordnen', worker.fetch(new Request('https://w.dev/tag-artists', { method: 'POST', headers: { Origin: O, Authorization: 'Bearer gut' }, body: JSON.stringify({ artists: ['Kraftklub', 'Cro'] }) }), env));
 await show('Falscher Login', worker.fetch(req('schlecht'), env));
 await show('Nicht freigegeben', worker.fetch(req('gut'), { ...env, ALLOWED_USERS: 'freund1' }));
 await show('Fremde Webseite', worker.fetch(req('gut', 'https://boese.example'), env));

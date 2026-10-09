@@ -13,7 +13,8 @@ App: `https://servusgruss.github.io/smart-shuffle/`
 - **Versteht Hörfehler bei Namen:** „Kraft Club“ → Kraftklub, „Billy Eilish“ → Billie Eilish,
   „Apatsche“ → Apache 207. Abgleich gegen die Interpreten *deiner* Bibliothek mit
   Tippabstand und deutscher Aussprache (Kölner Phonetik), komplett lokal, ohne KI-Dienst.
-- **Kriterien:** „nur …“, „ohne/kein …“, „die letzten 50“, „alle“, Interpret, Genre, Songtitel
+- **Kriterien:** „nur …“, „ohne/kein …“, „die letzten 50“, „alle“, Interpret, Genre, Songtitel,
+  Jahrzehnt/Jahr („90er“, „aus den 2000ern“, „von 1995“ – nach Erscheinungsjahr des Albums)
 - **Umfang:** Letzte 10 / 50 / 100 / 250 / Alle Lieblingssongs
 - **Smart Shuffle:** derselbe Interpret frühestens nach 3 anderen Songs wieder
 - **Abspielen ohne Längenlimit:** die Reihenfolge wird in eine eigene private Playlist
@@ -75,7 +76,11 @@ gemeinsame Playlists.
 - Stimmungen erkennt die KI über Genres und bekannte Interpreten, nicht pro einzelnem Song
   (Spotify gibt neuen Apps keine Audio-Merkmale mehr).
 
+- **Genres:** Mit KI-Server ordnet Claude einmalig alle Interpreten ihren Genres zu (Pakete à 150,
+  gespeichert auf dem Gerät). Ohne KI fragt die App Spotify einzeln pro Interpret – Spotify bremst
+  das bei großen Bibliotheken stark, es geht dann bei jedem Öffnen ein Stück weiter.
+- Jahrzehnte richten sich nach dem Erscheinungsjahr des Albums; Songs auf späteren
+  Best-of-Alben oder Remastern zählen zum späteren Jahr.
+
 ## Offene Punkte
 - Client ID als Voreinstellung in `config.js`, damit Freunde nur den Link öffnen und sich anmelden
-- Genres lädt Spotify nur einzeln pro Interpret; beim ersten Start dauert das im
-  Hintergrund ein paar Minuten, danach sind sie gespeichert.

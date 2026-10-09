@@ -214,11 +214,13 @@ async function api(path, opts = {}, attempt = 0) {
  * Jede Quelle liefert eine Liste von Tracks {uri, name, album, artists:[{id,name}], addedAt},
  * neueste zuerst. Weitere Quellen (eigene Playlists, gespeicherte Alben) lassen sich hier ergänzen.
  */
-const pack = (t) => ({ u: t.uri, n: t.name, al: t.album, a: t.artists.map((a) => [a.id, a.name]), d: t.addedAt });
-const unpack = (p) => ({ uri: p.u, name: p.n, album: p.al, artists: p.a.map(([id, name]) => ({ id, name })), addedAt: p.d });
+const pack = (t) => ({ u: t.uri, n: t.name, al: t.album, a: t.artists.map((a) => [a.id, a.name]), d: t.addedAt, y: t.year ?? null });
+const unpack = (p) => ({ uri: p.u, name: p.n, album: p.al, artists: p.a.map(([id, name]) => ({ id, name })), addedAt: p.d, year: p.y });
+const yearOf = (date) => { const y = parseInt(String(date || '').slice(0, 4), 10); return y > 1900 ? y : null; };
 const fromSaved = (it) => it.track && it.track.uri ? {
   uri: it.track.uri, name: it.track.name, album: it.track.album?.name || '',
   artists: (it.track.artists || []).map((a) => ({ id: a.id, name: a.name })), addedAt: it.added_at,
+  year: yearOf(it.track.album?.release_date),
 } : null;
 
 const SOURCES = {
@@ -295,7 +297,9 @@ async function syncLibrary(full = false) {
   $('reloadBtn').disabled = true;
   check('tracks', 'wait', full ? 'lade komplett …' : 'gleiche ab …');
   try {
-    const result = await SOURCES[settings.source].sync(tracks, full, (msg) => { $('libStatus').textContent = msg; });
+    const noYears = tracks.length && tracks.every((t) => t.year === undefined); // Zwischenspeicher von vor der Jahres-Funktion
+    if (noYears) log('Lade Bibliothek einmal komplett neu, um Erscheinungsjahre zu ergänzen.');
+    const result = await SOURCES[settings.source].sync(tracks, full || noYears, (msg) => { $('libStatus').textContent = msg; });
     tracks = result.tracks;
     const ok = store.set('lib:' + settings.source, { tracks: tracks.map(pack), syncedAt: Date.now() });
     if (!ok) toast('Bibliothek zu groß für den Gerätespeicher – wird beim nächsten Start neu geladen.', true);
@@ -304,7 +308,7 @@ async function syncLibrary(full = false) {
     if (result.added && !result.full) toast(`${result.added} neue Lieblingssongs übernommen.`);
     log(`Bibliothek abgeglichen: ${tracks.length} Songs (${result.full ? 'komplett' : result.added + ' neu'}).`);
     makeShuffle();
-    loadMissingGenres();
+    loadGenres();
   } catch (e) {
     check('tracks', 'fail', e.message);
     if (!tracks.length) toast('Songs konnten nicht geladen werden: ' + e.message, true);
@@ -326,7 +330,7 @@ async function loadMissingGenres() {
   let done = 0;
   try {
     for (const id of missing) {
-      try { genres[id] = (await api('/artists/' + id)).genres || []; }
+      try { genres[id] = (await api('/artists/' + id, {}, 4)).genres || []; }   // 4 = ohne Wiederholungen
       catch (e) { if (e.status === 404) genres[id] = []; else throw e; }
       done++;
       if (done % 20 === 0 || done === missing.length) {
@@ -340,11 +344,63 @@ async function loadMissingGenres() {
     if (missing.length) { index = Matcher.buildIndex(tracks, genres); showParsed(); }
   } catch (e) {
     store.set('genreCache', genres);
-    check('genres', 'fail', `${done} geladen, dann Fehler: ${e.message}. Wird beim nächsten Start fortgesetzt.`);
+    if (e.status === 429) check('genres', '', `${done} geladen – Spotify bremst, geht beim nächsten Öffnen weiter. Schneller mit KI-Server.`);
+    else check('genres', 'fail', `${done} geladen, dann Fehler: ${e.message}. Wird beim nächsten Start fortgesetzt.`);
   } finally {
     genreRun = false;
   }
 }
+
+/* Genres über die KI: Claude ordnet alle Interpreten in Paketen zu, einmalig pro Interpret.
+ * Schneller und vollständiger als Spotify-Einzelabfragen. */
+async function tagGenresWithKi() {
+  if (genreRun) return;
+  genreRun = true;
+  const url = kiUrl();
+  const idsByName = new Map(), freq = new Map();
+  for (const t of tracks) for (const a of t.artists) {
+    if (!a.id) continue;
+    if (!idsByName.has(a.name)) idsByName.set(a.name, new Set());
+    idsByName.get(a.name).add(a.id);
+    freq.set(a.name, (freq.get(a.name) || 0) + 1);
+  }
+  const tried = new Set(store.get('kiTagged') || []);
+  const missing = [...idsByName.keys()]
+    .filter((name) => !tried.has(name) && ![...idsByName.get(name)].some((id) => genres[id]?.length))
+    .sort((a, b) => freq.get(b) - freq.get(a));
+  let done = 0;
+  try {
+    for (let i = 0; i < missing.length; i += 150) {
+      const batch = missing.slice(i, i + 150);
+      check('genres', 'wait', `KI ordnet zu: ${done} von ${missing.length} Interpreten …`);
+      const res = await fetch(url + '/tag-artists', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (await getAccessToken()) },
+        body: JSON.stringify({ artists: batch }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      for (const name of batch) {
+        const g = data.tags?.[name] || [];
+        for (const id of idsByName.get(name)) if (g.length || !(id in genres)) genres[id] = g;
+        tried.add(name);
+      }
+      done += batch.length;
+      store.set('genreCache', genres);
+      store.set('kiTagged', [...tried]);
+      index = Matcher.buildIndex(tracks, genres);
+    }
+    const ids = [...new Set(tracks.flatMap((t) => t.artists.map((a) => a.id)).filter(Boolean))];
+    const withGenre = ids.filter((id) => genres[id]?.length).length;
+    check('genres', 'ok', `${withGenre} von ${ids.length} Interpreten mit Genre (KI)`);
+    if (missing.length) { log(`KI hat ${missing.length} Interpreten Genres zugeordnet.`); makeShuffle(); }
+  } catch (e) {
+    check('genres', 'fail', `${done} zugeordnet, dann Fehler: ${e.message}. Geht beim nächsten Öffnen weiter.`);
+  } finally {
+    genreRun = false;
+  }
+}
+const loadGenres = () => (kiUrl() ? tagGenresWithKi() : loadMissingGenres());
 
 /* ---------- Kriterien ---------- */
 const chipCount = () => (settings.count === 'all' ? Infinity : Number(settings.count));
@@ -360,6 +416,7 @@ function kiCriteria() {
   return {
     fromKi: true,
     summary: f.summary,
+    years: f.year_from || f.year_to ? { from: f.year_from || 1900, to: f.year_to || 2100 } : null,
     count: f.count === null || f.count === undefined ? chipCount() : f.count === 0 ? Infinity : f.count,
     countFromVoice: f.count !== null && f.count !== undefined,
     include: [...f.include_artists.map(artist), ...f.include_genres.map(genre), ...(f.title_keywords || []).map(text)],
@@ -373,6 +430,7 @@ function currentCriteria() {
   return {
     count: q.count || chipCount(),
     countFromVoice: !!q.count,
+    years: q.years,
     include: q.include.map((t) => ({ term: t, ...Matcher.resolveTerm(t, index) })),
     exclude: q.exclude.map((t) => ({ term: t, ...Matcher.resolveTerm(t, index) })),
   };
@@ -457,6 +515,7 @@ function showParsed() {
   };
   const parts = [];
   if (c.fromKi) parts.push('<span class="tag ki">KI</span>');
+  if (c.years) parts.push(`<span class="tag">${c.years.from === c.years.to ? c.years.from : c.years.from + '–' + c.years.to}</span>`);
   if (c.countFromVoice) parts.push(`<span class="tag">${c.count === Infinity ? 'Alle' : 'Letzte ' + c.count}</span>`);
   parts.push(...c.include.map((r) => tag(r, false)), ...c.exclude.map((r) => tag(r, true)));
   $('parsed').innerHTML = parts.join('');
@@ -492,6 +551,7 @@ function makeShuffle() {
   showParsed();
   const c = currentCriteria();
   let pool = tracks.slice(0, c.count);
+  if (c.years) pool = pool.filter((t) => t.year && t.year >= c.years.from && t.year <= c.years.to);
   if (c.include.length) pool = pool.filter((t) => c.include.some((r) => Matcher.trackMatches(t, r, genres)));
   if (c.exclude.length) pool = pool.filter((t) => !c.exclude.some((r) => Matcher.trackMatches(t, r, genres)));
   queue = spreadArtists(pool);
@@ -715,7 +775,7 @@ async function init() {
   $('logoutBtn').addEventListener('click', logout);
   $('reloadBtn').addEventListener('click', () => syncLibrary(true));
   $('kiUrl').value = store.get('kiUrl') ?? window.SMART_SHUFFLE_CONFIG?.kiUrl ?? '';
-  $('kiUrl').addEventListener('change', () => { store.set('kiUrl', $('kiUrl').value.trim()); settings.ki = null; saveSettings(); testKi(); });
+  $('kiUrl').addEventListener('change', () => { store.set('kiUrl', $('kiUrl').value.trim()); settings.ki = null; saveSettings(); testKi(); if (tracks.length) loadGenres(); });
   $('kiTestBtn').addEventListener('click', testKi);
   $('spotifyId').addEventListener('click', () => me && navigator.clipboard?.writeText(me.id).then(() => toast('Spotify-ID kopiert.')));
   if (kiUrl()) check('ki', '', 'eingerichtet'); else check('ki', '', 'nicht eingerichtet – Erkennung nur auf dem Gerät');
@@ -755,7 +815,7 @@ async function init() {
   }
   if (await loadProfile()) {
     await syncLibrary(false);
-    if (!syncing) loadMissingGenres();
+    if (!syncing) loadGenres();
   }
 }
 
