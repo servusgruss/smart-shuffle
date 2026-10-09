@@ -95,8 +95,13 @@ async function sha256base64url(text) {
   return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 async function login() {
-  const id = $('clientId').value.trim();
+  const id = $('clientId').value.replace(/\s+/g, '').toLowerCase();
+  $('clientId').value = id;
   if (!id) { toast('Bitte zuerst die Client ID eintragen.', true); return; }
+  if (!/^[0-9a-f]{32}$/.test(id)) {
+    toast(`Die Client ID hat ${id.length} statt 32 Zeichen oder enthält ungültige Zeichen (erlaubt: 0–9, a–f). Bitte aus dem Spotify-Dashboard kopieren.`, true);
+    return;
+  }
   if (store.get('clientId') && store.get('clientId') !== id) store.del('token'); // andere Spotify-App → alter Login gilt nicht
   store.set('clientId', id);
   const verifier = randomString(64);
