@@ -14,6 +14,7 @@
  *   DAILY_LIMIT        (optional)         KI-Anfragen pro Person und Tag, Standard 200 (nur mit KV-Bindung USAGE)
  */
 
+const VERSION = '2026-10-09.2';
 const MAX_TEXT = 400;
 const MAX_ARTISTS = 2500;
 const MAX_GENRES = 800;
@@ -135,6 +136,7 @@ export default {
     if (url.pathname === '/health') {
       return json({
         ok: true,
+        version: VERSION,
         apiKey: !!env.ANTHROPIC_API_KEY,
         allowedUsers: list(env.ALLOWED_USERS).length,
         dailyLimit: env.USAGE ? Number(env.DAILY_LIMIT || 200) : null,
