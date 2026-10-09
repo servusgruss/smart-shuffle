@@ -272,6 +272,7 @@ async function api(path, opts = {}, attempt = 0) {
     ...opts,
     headers: { Authorization: 'Bearer ' + (await getAccessToken()), 'Content-Type': 'application/json', ...(opts.headers || {}) },
   });
+  if (!res.ok && res.status !== 401) await rememberSpotifyError(res, path);
   if (res.status === 429) {
     // Kurze Bremse: abwarten und wiederholen. Lange Bremse: abbrechen und sagen, wann es weitergeht.
     const raw = res.headers.get('Retry-After');
@@ -288,7 +289,8 @@ async function api(path, opts = {}, attempt = 0) {
     err.status = 429;
     err.quota = quota;
     err.retryAfter = retryAfter;
-    store.set('blockedUntil', Date.now() + (retryAfter || 120) * 1000);
+    // Sperre höchstens 6 Stunden merken – auch wenn Spotify eine längere Wartezeit nennt
+    store.set('blockedUntil', Date.now() + Math.min(retryAfter || 120, 6 * 3600) * 1000);
     throw err;
   }
   if (res.status === 401 && attempt === 0) {           // Token serverseitig ungültig → einmal erneuern
@@ -304,6 +306,56 @@ async function api(path, opts = {}, attempt = 0) {
     throw err;
   }
   return data;
+}
+
+/* Genaue Spotify-Antwort festhalten, damit sie in den Einstellungen sichtbar ist. */
+async function rememberSpotifyError(res, path) {
+  const body = await res.clone().json().catch(() => null);
+  store.set('lastSpotifyError', {
+    at: Date.now(),
+    status: res.status,
+    reason: body?.error?.reason || null,
+    message: body?.error?.message || null,
+    retryAfter: res.headers.get('Retry-After'),
+    path: path.split('?')[0],
+  });
+  renderSpotifyStatus();
+}
+function renderSpotifyStatus() {
+  const e = store.get('lastSpotifyError');
+  const blocked = (store.get('blockedUntil') || 0) - Date.now();
+  if (!e) { $('spotifyStatus').textContent = 'Noch kein Fehler von Spotify aufgezeichnet.'; return; }
+  const when = new Date(e.at).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'medium' });
+  const ra = e.retryAfter
+    ? `${e.retryAfter} s (≈ ${(Number(e.retryAfter) / 3600).toFixed(1).replace('.', ',')} Std.)`
+    : 'nicht angegeben bzw. für Web-Apps nicht lesbar';
+  $('spotifyStatus').textContent = [
+    `Zeit:          ${when}`,
+    `HTTP-Status:   ${e.status}`,
+    `Grund:         ${e.reason || '–'}`,
+    `Meldung:       ${e.message || '–'}`,
+    `Retry-After:   ${ra}`,
+    `Anfrage:       ${e.path}`,
+    `App wartet noch: ${blocked > 0 ? Math.ceil(blocked / 60000) + ' Min.' : 'nein'}`,
+  ].join('\n');
+}
+/* Genau eine Anfrage, ohne Wiederholungen – auch während einer gemerkten Sperre. */
+async function probeSpotify() {
+  $('probeBtn').disabled = true;
+  try {
+    await api('/me', {}, 3);
+    store.del('blockedUntil');
+    store.del('lastSpotifyError');
+    $('spotifyStatus').textContent = `Spotify antwortet wieder normal (${new Date().toLocaleTimeString('de-DE')}). Lade weiter …`;
+    toast('Spotify ist wieder erreichbar.');
+    libError = null; clearTimeout(retryTimer);
+    startOnline();
+  } catch (e) {
+    renderSpotifyStatus();
+    toast('Spotify sperrt weiterhin: HTTP ' + (e.status || '?') + (e.quota ? ' · QUOTA_EXCEEDED' : ''), true);
+  } finally {
+    $('probeBtn').disabled = false;
+  }
 }
 
 /* ---------- Quellen ----------
@@ -1060,7 +1112,7 @@ async function init() {
   $('kiTestBtn').addEventListener('click', testKi);
   $('spotifyId').addEventListener('click', () => me && navigator.clipboard?.writeText(me.id).then(() => toast('Spotify-ID kopiert.')));
   if (kiUrl()) check('ki', '', 'eingerichtet'); else check('ki', '', 'nicht eingerichtet – Erkennung nur auf dem Gerät');
-  $('settingsBtn').addEventListener('click', () => $('settings').showModal());
+  $('settingsBtn').addEventListener('click', () => { renderSpotifyStatus(); $('settings').showModal(); });
   $('closeSettings').addEventListener('click', () => $('settings').close());
   $('settings').addEventListener('click', (e) => { if (e.target === $('settings')) $('settings').close(); });
   $('shuffleBtn').addEventListener('click', makeShuffle);
@@ -1069,6 +1121,8 @@ async function init() {
   renderDevice();
   $('deviceClose').addEventListener('click', () => $('devicePicker').close());
   $('pasteBtn').addEventListener('click', pasteLoginCode);
+  $('probeBtn').addEventListener('click', probeSpotify);
+  renderSpotifyStatus();
   renderDiscoverSettings();
   $('discoverCount').addEventListener('input', () => { settings.discoverCount = Number($('discoverCount').value); saveSettings(); renderDiscoverSettings(); makeShuffle(); });
   $('kiShare').addEventListener('input', () => { settings.kiShare = Number($('kiShare').value); saveSettings(); renderDiscoverSettings(); });
