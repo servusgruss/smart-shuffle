@@ -654,13 +654,52 @@ async function interpretWithKi(text) {
   }
 }
 /* Wunsch übernehmen: speichern, KI fragen (falls eingerichtet), mischen. */
+/* ---------- „Läuft gerade“-Zustand ----------
+ * Solange die KI den Wunsch versteht oder neue Songs gesucht werden, ist Abspielen gesperrt und
+ * statt der (noch unvollständigen) Reihenfolge erscheint ein Ladebalken. */
+let busy = false, busyGuard = null;
+function setProgress(text, frac) {
+  if (!busy) return;
+  $('progressText').textContent = text;
+  $('progressBar').style.width = Math.round(Math.max(0.05, Math.min(1, frac)) * 100) + '%';
+}
+function beginBusy(text) {
+  busy = true;
+  clearTimeout(busyGuard);
+  busyGuard = setTimeout(() => { if (busy) { log('Suche dauert zu lange – zeige bisheriges Ergebnis.'); endBusy(); makeShuffle(); } }, 60000);
+  $('query').readOnly = true;
+  $('micBtn').disabled = true;
+  setProgress(text, 0.08);
+  renderQueue();
+}
+function endBusy() {
+  busy = false;
+  clearTimeout(busyGuard);
+  $('query').readOnly = false;
+  $('micBtn').disabled = false;
+}
+function needsKi(text) { return !!(text && kiUrl() && tracks.length && !(settings.ki && settings.ki.query === text)); }
+function needsDiscovery() {
+  return !!(Number(settings.discoverCount) && kiUrl() && tracks.length
+    && store.get('discovered')?.sig !== discoverySig() && Date.now() >= (store.get('blockedUntil') || 0));
+}
+async function runSearch({ text = $('query').value.trim(), forceDiscover = false } = {}) {
+  const ki = needsKi(text), disc = forceDiscover || needsDiscovery();
+  if (!ki && !disc) { makeShuffle(); return; }
+  beginBusy(ki ? 'Wunsch wird verstanden …' : 'Neue Songs werden gesucht …');
+  makeShuffle();
+  try {
+    if (ki) { await interpretWithKi(text); setProgress('Neue Songs werden gesucht …', 0.3); }
+    if (disc || needsDiscovery()) await discoverNew(forceDiscover, ki ? 0.3 : 0.1);
+  } finally {
+    endBusy();
+    makeShuffle();
+  }
+}
 async function commitQuery() {
-  const text = $('query').value.trim();
-  settings.query = text;
+  settings.query = $('query').value.trim();
   saveSettings();
-  makeShuffle();                       // sofort: Vorschau mit der Erkennung auf dem Gerät
-  if (text && await interpretWithKi(text)) makeShuffle();
-  if (await discoverNew()) makeShuffle();
+  await runSearch();
 }
 
 /* ---------- Neues entdecken ----------
@@ -699,7 +738,7 @@ async function searchTrack(cand) {
   }));
   return hit ? pack(fromSaved({ track: hit, added_at: null })) : null;
 }
-async function discoverNew(force = false) {
+async function discoverNew(force = false, startFrac = 0.1) {
   const n = Number(settings.discoverCount) || 0;
   if (!n || !kiUrl() || !tracks.length || discovering) return false;
   if (Date.now() < (store.get('blockedUntil') || 0)) return false;
@@ -737,6 +776,7 @@ async function discoverNew(force = false) {
         if (hit === undefined) {
           if (searches >= n) break;                       // Spotify-Budget für diesen Mix erschöpft
           searches++;
+          setProgress(`Neue Songs werden gesucht … ${found.length} von ${n} gefunden`, startFrac + (1 - startFrac) * Math.min(1, searches / n));
           hit = await searchTrack(cand);
           cache[k] = hit;
         } else cached++;
@@ -883,14 +923,19 @@ function makeShuffle() {
   const fresh = currentDiscoveries();
   queue = mergeNew(spreadArtists(pool), fresh);
   renderQueue();
-  $('playBtn').disabled = !queue.length;
-  $('shuffleBtn').disabled = !tracks.length;
+  $('playBtn').disabled = busy || !queue.length;
+  $('shuffleBtn').disabled = busy || !tracks.length;
+  if (busy) return;
   if (tracks.length && !queue.length) {
     const genreWanted = c.include.some((r) => r.type === 'genre');
     toast(genreWanted && genreRun ? 'Keine Treffer – Genres werden noch geladen.' : 'Keine Songs passen zu diesem Wunsch.', true);
   } else if ($('toast').classList.contains('bad')) toast('');
 }
 function renderQueue() {
+  $('progress').hidden = !busy;
+  $('list').hidden = busy;
+  $('discoverBtn').classList.toggle('is-hidden', busy);
+  if (busy) { $('count').textContent = ''; $('empty').hidden = true; return; }
   $('count').textContent = queue.length ? `· ${queue.length}` : '';
   $('empty').hidden = !!tracks.length;
   const shown = queue.slice(0, 300);
@@ -1000,7 +1045,7 @@ function renderDevice() {
 }
 
 async function play(forceAsk = false, note = '') {
-  if (!queue.length) return;
+  if (!queue.length || busy) return;
   $('playBtn').disabled = true;
   check('devices', 'wait');
   let device = null;
@@ -1175,7 +1220,7 @@ async function init() {
   renderDiscoverSettings();
   $('discoverCount').addEventListener('input', () => { settings.discoverCount = Number($('discoverCount').value); saveSettings(); renderDiscoverSettings(); makeShuffle(); });
   $('kiShare').addEventListener('input', () => { settings.kiShare = Number($('kiShare').value); saveSettings(); renderDiscoverSettings(); });
-  $('discoverBtn').addEventListener('click', async () => { if (await discoverNew(true)) makeShuffle(); });
+  $('discoverBtn').addEventListener('click', () => { if (!busy) runSearch({ forceDiscover: true }); });
   $('list').addEventListener('click', (e) => { const b = e.target.closest('.heart'); if (b && !b.disabled && !b.classList.contains('on')) saveNewSong(b.dataset.uri, b); });
   $('pasteField').addEventListener('input', () => { if ($('pasteField').value.trim().startsWith('SS1.')) acceptLoginCode($('pasteField').value); });
   $('handoffClose').addEventListener('click', () => $('handoff').close());
@@ -1228,7 +1273,7 @@ async function startOnline() {
   if (await loadProfile()) {
     await syncLibrary(false);
     if (!syncing) loadGenres();
-    if (await discoverNew()) makeShuffle();     // nur, wenn es für den aktuellen Wunsch noch keine Vorschläge gibt
+    await runSearch();     // nur, wenn KI-Auswertung oder Vorschläge für den aktuellen Wunsch noch fehlen
   }
 }
 
