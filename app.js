@@ -1019,11 +1019,25 @@ async function play(forceAsk = false, note = '') {
 }
 
 /* ---------- Spracheingabe ---------- */
+/* Spracheingabe.
+ * Safari: eingebaute Spracherkennung der Webseite.
+ * Home-Bildschirm-App: Dort erlaubt iOS die Spracherkennung für Webseiten nicht („service-not-allowed“,
+ * WebKit-Bug 225298). Der Mikrofon-Knopf öffnet dann das Eingabefeld mit Tastatur, und man spricht über
+ * die Diktiertaste der iPhone-Tastatur. Beim Schließen der Tastatur wird der Wunsch wie gewohnt übernommen.
+ */
+function useKeyboardDictation(reason) {
+  const q = $('query');
+  q.focus();
+  q.select();
+  check('speech', 'ok', reason || 'über die Diktiertaste der Tastatur');
+  toast('Tippe auf der Tastatur auf das Mikrofon 🎙 und sprich. Danach „Fertig“.');
+}
 function setupSpeech() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) {
-    check('speech', 'fail', 'Dieser Browser kann keine Spracheingabe – auf dem iPhone Safari nutzen.');
-    $('micBtn').disabled = true;
+  const keyboardMode = () => !SR || isStandalone() || store.get('speechBlocked') === true;
+  if (keyboardMode()) {
+    check('speech', '', isStandalone() ? 'Home-Bildschirm-App: Diktat über die Tastatur' : 'Diktat über die Tastatur');
+    $('micBtn').addEventListener('click', () => useKeyboardDictation());
     return;
   }
   check('speech', '', 'verfügbar');
@@ -1031,13 +1045,13 @@ function setupSpeech() {
   rec.lang = 'de-DE';
   rec.interimResults = true;
   rec.continuous = false;
-  let listening = false, heard = '';
-  rec.onstart = () => { listening = true; heard = ''; $('micBtn').classList.add('listening'); toast('Ich höre zu …'); };
+  let listening = false, heard = '', failed = false;
+  rec.onstart = () => { listening = true; heard = ''; failed = false; $('micBtn').classList.add('listening'); toast('Ich höre zu …'); };
   rec.onend = () => {
     listening = false;
     $('micBtn').classList.remove('listening');
     if (heard) { toast(''); commitQuery(); }
-    else toast('Nichts verstanden – nochmal versuchen.', true);
+    else if (!failed) toast('Nichts verstanden – nochmal versuchen.', true);
   };
   rec.onresult = (ev) => {
     heard = Array.from(ev.results).map((r) => r[0].transcript).join(' ').trim();
@@ -1047,10 +1061,20 @@ function setupSpeech() {
   };
   rec.onerror = (ev) => {
     if (ev.error === 'no-speech' || ev.error === 'aborted') return;
+    failed = true;
+    log('Spracheingabe-Fehler: ' + ev.error);
+    if (ev.error === 'service-not-allowed') {
+      // Siri/Diktierfunktion aus oder Umgebung ohne Spracherkennung → auf Tastatur-Diktat umstellen
+      store.set('speechBlocked', true);
+      check('speech', 'fail', 'Spracherkennung vom System nicht erlaubt – ab jetzt Diktat über die Tastatur');
+      toast('iOS erlaubt hier keine Spracherkennung. Tippe nochmal aufs Mikrofon und nutze die Diktiertaste der Tastatur. Falls die fehlt: Einstellungen → Allgemein → Tastatur → Diktierfunktion aktivieren.', true);
+      return;
+    }
     check('speech', 'fail', ev.error === 'not-allowed' ? 'Mikrofon-Zugriff verweigert' : ev.error);
     toast(ev.error === 'not-allowed' ? 'Mikrofon in den Safari-Einstellungen erlauben.' : 'Spracheingabe: ' + ev.error, true);
   };
   $('micBtn').addEventListener('click', () => {
+    if (store.get('speechBlocked') === true) { useKeyboardDictation(); return; }
     if (listening) { rec.stop(); return; }
     try { rec.start(); } catch (e) { log('Spracheingabe: ' + e.message); }
   });

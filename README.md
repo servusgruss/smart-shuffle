@@ -9,7 +9,9 @@ Client Secret (OAuth mit PKCE).
 App: `https://servusgruss.github.io/smart-shuffle/`
 
 ## Funktionen
-- **Spracheingabe** auf Deutsch (Web Speech API in Safari)
+- **Spracheingabe** auf Deutsch: in Safari über die Spracherkennung der Webseite. In der
+  Home-Bildschirm-App erlaubt iOS das nicht (WebKit-Bug 225298) – dort öffnet der Mikrofon-Knopf
+  die Tastatur, gesprochen wird über deren Diktiertaste.
 - **Versteht Hörfehler bei Namen:** „Kraft Club“ → Kraftklub, „Billy Eilish“ → Billie Eilish,
   „Apatsche“ → Apache 207. Abgleich gegen die Interpreten *deiner* Bibliothek mit
   Tippabstand und deutscher Aussprache (Kölner Phonetik), komplett lokal, ohne KI-Dienst.
