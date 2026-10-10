@@ -919,6 +919,30 @@ async function ensurePlaylist() {
   log('Private Playlist „' + PLAYLIST_NAME + '“ angelegt.');
   return p;
 }
+/* Startet die Wiedergabe und prüft, ob wirklich der neue erste Song läuft. Spielt Spotify noch den
+ * alten Stand der Playlist (kurz nach dem Überschreiben möglich), wird einmal neu gestartet –
+ * genau das, was man sonst durch zweites Antippen von „Abspielen“ erreicht. */
+async function startPlayback(dev, body, firstUri) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await api(`/me/player/play?${dev}`, { method: 'PUT', body: JSON.stringify(body) });
+    } catch (e) {
+      // Kennt Spotify den neuen ersten Song in der Playlist noch nicht, kommt ein Fehler → kurz warten, nochmal
+      if (body.context_uri && attempt < 3 && (e.status === 404 || e.status === 400 || e.status === 502)) {
+        log(`Spotify kennt die neue Reihenfolge noch nicht, Versuch ${attempt + 1} …`);
+        await sleep(1200);
+        continue;
+      }
+      throw e;
+    }
+    if (!body.context_uri) return;
+    await sleep(1300);
+    const now = await api('/me/player?additional_types=track').catch(() => null);
+    const playing = now?.item?.uri;
+    if (!playing || playing === firstUri) return;
+    log(`Spotify spielt noch die alte Reihenfolge (${now.item.name}), starte neu …`);
+  }
+}
 async function fillPlaylist(id, uris) {
   for (let i = 0; i < uris.length; i += 100) {
     const chunk = uris.slice(i, i + 100);
@@ -992,13 +1016,14 @@ async function play(forceAsk = false, note = '') {
       toast('Übertrage Reihenfolge …');
       const p = await ensurePlaylist();
       await fillPlaylist(p.id, uris);
-      body = { context_uri: p.uri, offset: { position: 0 } };
+      await sleep(800);                                   // Spotify braucht kurz, bis die neue Reihenfolge überall ankommt
+      body = { context_uri: p.uri, offset: { uri: uris[0] } };   // gezielt mit dem neuen ersten Song starten
     } else {
       body = { uris: uris.slice(0, 100) };
       log('Ohne Playlist-Recht: nur die ersten 100 Songs. Einmal neu anmelden behebt das.');
     }
     await api(`/me/player/shuffle?state=false&${dev}`, { method: 'PUT' }).catch(() => {});
-    await api(`/me/player/play?${dev}`, { method: 'PUT', body: JSON.stringify(body) });
+    await startPlayback(dev, body, uris[0]);
     check('play', 'ok', `${queue.length} Songs auf ${device.name}`);
     toast(`Läuft auf ${device.name}: ${queue[0].name}`);
   } catch (e) {
