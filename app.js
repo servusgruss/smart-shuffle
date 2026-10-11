@@ -1353,15 +1353,15 @@ async function init() {
     settings.count = b.dataset.count; saveSettings(); renderChips(); makeShuffle();
   });
   $('source').value = settings.source;
-  let typing;
   $('query').value = settings.query || '';
+  // Beim Tippen nur die Filter-Schilder als Vorschau – gemischt und gemeldet wird erst nach dem Bestätigen
+  // (Enter, „Fertig“ auf der Tastatur, Mikrofon). Alte Fehlermeldungen verschwinden beim Weitertippen.
   $('query').addEventListener('input', () => {
     showParsed();
-    clearTimeout(typing);
-    typing = setTimeout(makeShuffle, 500);        // Vorschau beim Tippen, KI erst beim Bestätigen
+    if ($('toast').classList.contains('bad')) toast('');
   });
   $('query').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('query').blur(); } });
-  $('query').addEventListener('blur', () => { clearTimeout(typing); if ($('query').value.trim() !== settings.query || !settings.ki) commitQuery(); });
+  $('query').addEventListener('blur', () => { if ($('query').value.trim() !== settings.query || !settings.ki) commitQuery(); });
   setupSpeech();
 
   if (await handleRedirect() === 'handoff') return;   // nur Übergabe anzeigen, hier nichts laden
