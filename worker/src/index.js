@@ -3,6 +3,8 @@
  * Mittelsmann zwischen App und Claude-API:
  *   POST /interpret    Sprachwunsch → Filter (Interpreten, Genres, Jahre, Anzahl)
  *   POST /tag-artists  Interpretennamen → Genres (einmalig, die App speichert das Ergebnis)
+ *   POST /tag-tracks   Songs → Merkmale pro Song: Genre, Stimmung, Energie, Sprache, Originaljahr
+ *                      (Last.fm-Schlagworte + Claude, einmalig, die App speichert das Ergebnis)
  *   POST /discover     neue, ähnliche Songs von Last.fm (Hördaten) und Claude, Anteile steuerbar
  *   GET  /health       Zustand der Einrichtung
  * Jede POST-Anfrage braucht einen gültigen Spotify-Login (Authorization-Header),
@@ -17,11 +19,18 @@
  *   LASTFM_API_KEY     (Secret, optional) Schlüssel von last.fm/api für ähnliche Songs aus echten Hördaten
  */
 
-const VERSION = '2026-10-10.1';
+const VERSION = '2026-10-11.1';
 const MAX_TEXT = 400;
 const MAX_ARTISTS = 2500;
 const MAX_GENRES = 1200;
 const TAG_BATCH = 150;
+const TRACK_BATCH_LASTFM = 40;   // je Song eine Last.fm-Abfrage; Cloudflare erlaubt 50 Unteranfragen pro Aufruf
+const TRACK_BATCH_KI = 100;      // ohne Last.fm passen mehr Songs in ein Paket
+
+/* Feste Stimmungsliste – dieselben Wörter beim Merkmale-Vergeben und beim Wunsch-Verstehen,
+ * damit beide Seiten exakt zusammenpassen. */
+const MOODS = ['ruhig', 'entspannt', 'verträumt', 'melancholisch', 'traurig', 'romantisch', 'nachdenklich',
+  'fröhlich', 'energiegeladen', 'motivierend', 'tanzbar', 'partytauglich', 'aggressiv', 'düster', 'episch'];
 
 /* ---------- Wunsch → Filter ---------- */
 const FILTER_TOOL = {
@@ -35,14 +44,46 @@ const FILTER_TOOL = {
       include_genres: { type: 'array', items: { type: 'string' }, description: 'Genres, die gespielt werden sollen. Nur exakte Einträge aus der Genreliste.' },
       exclude_genres: { type: 'array', items: { type: 'string' }, description: 'Genres, die ausgeschlossen werden. Nur exakte Einträge aus der Genreliste.' },
       title_keywords: { type: 'array', items: { type: 'string' }, description: 'Nur wenn ausdrücklich nach Wörtern im Songtitel gefragt wird.' },
+      include_moods: { type: 'array', items: { type: 'string', enum: MOODS }, description: 'Stimmungen, von denen ein Song mindestens eine haben muss. Leer = egal.' },
+      exclude_moods: { type: 'array', items: { type: 'string', enum: MOODS }, description: 'Stimmungen, die ein Song nicht haben darf.' },
+      energy_min: { type: ['integer', 'null'], description: 'Mindest-Energie 1–5 (1 sehr ruhig … 5 sehr energiegeladen). null = egal.' },
+      energy_max: { type: ['integer', 'null'], description: 'Höchst-Energie 1–5. null = egal.' },
+      languages: { type: 'array', items: { type: 'string' }, description: 'Gesangssprachen als Kürzel, z. B. „de“, „en“; „instrumental“ für ohne Gesang. Nur wenn ausdrücklich gewünscht („deutsche Songs“). Leer = egal.' },
       year_from: { type: ['integer', 'null'], description: 'Frühestes Erscheinungsjahr, z. B. „90er“ → 1990. null = keine Einschränkung.' },
       year_to: { type: ['integer', 'null'], description: 'Spätestes Erscheinungsjahr, z. B. „90er“ → 1999. null = keine Einschränkung.' },
       count: { type: ['integer', 'null'], description: 'Anzahl der zuletzt gespeicherten Songs, wenn genannt („die letzten 50“ → 50). 0 = ausdrücklich alle. null = nicht erwähnt.' },
       summary: { type: 'string', description: 'Sehr kurze deutsche Bestätigung, was gespielt wird (max. 10 Wörter).' },
     },
-    required: ['include_artists', 'exclude_artists', 'include_genres', 'exclude_genres', 'year_from', 'year_to', 'count', 'summary'],
+    required: ['include_artists', 'exclude_artists', 'include_genres', 'exclude_genres', 'include_moods', 'exclude_moods',
+      'energy_min', 'energy_max', 'languages', 'year_from', 'year_to', 'count', 'summary'],
   },
 };
+
+/* Mit Merkmalen pro Song: Genres, Stimmungen und Energie wirken direkt auf jeden Song –
+ * Interpreten werden nur noch gewählt, wenn sie wirklich gemeint sind. Das macht die Auswahl genauer. */
+const FILTER_INSTRUCTIONS_SONGS = `Du übersetzt einen gesprochenen deutschen Musikwunsch in Filter für einen Shuffle über die Lieblingssongs einer Person.
+Der Text stammt aus einer Spracherkennung und enthält oft falsch geschriebene Namen („Kraft Club“ = Kraftklub, „Billy Eilish“ = Billie Eilish).
+Jeder Song hat eigene Merkmale: Genres, Stimmungen, Energie (1 sehr ruhig … 5 sehr energiegeladen), Gesangssprache und Erscheinungsjahr.
+
+So wird gefiltert – ein Song wird gespielt, wenn ALLES zutrifft:
+1. Er passt zu MINDESTENS EINEM Eintrag aus include_artists / include_genres / title_keywords (sind alle drei leer: jeder Song).
+2. Er hat mindestens eine der include_moods (leer: egal).
+3. Seine Energie liegt zwischen energy_min und energy_max (null: egal).
+4. Seine Sprache steht in languages (leer: egal).
+5. Er liegt im Jahresbereich und passt zu keinem Ausschluss.
+
+Regeln:
+- Interpreten NUR, wenn ein Interpret genannt oder eindeutig gemeint ist. Für Genre- oder Stimmungswünsche KEINE Interpreten auswählen – das erledigen die Song-Merkmale genauer.
+- Genres: nur exakte Einträge aus der Genreliste. Allgemeine Begriffe auf das Hauptgenre abbilden („Rock“ → rock, „Rap“ → hip hop, „Elektro“ → electronic); nur Untergenres nehmen, wenn sie ausdrücklich gemeint sind („Punkrock“ → punk rock).
+- Stimmung und Anlass: über include_moods und Energie, sparsam und treffend.
+  „ruhig / zum Einschlafen“ → energy_max 2 (und z. B. ruhig, entspannt); „zum Feiern“ → tanzbar, partytauglich, energy_min 4;
+  „zum Joggen / Sport“ → energy_min 4, motivierend; „traurig“ → traurig, melancholisch; „Kochen / nebenbei“ → entspannt, fröhlich, energy_max 3.
+- Kein Genre erfinden, wenn nur eine Stimmung gewünscht ist („was Ruhiges“ → nur Stimmung/Energie, keine Genres).
+- Sprache nur bei ausdrücklichem Wunsch („deutsche Songs“ → de, „englisch“ → en, „ohne Gesang“ → instrumental).
+- Jahrzehnte und Jahre („90er“, „aus den 2000ern“, „von 1995“) → year_from / year_to.
+- „ohne“, „kein“, „nicht“, „außer“ → Ausschlüsse (exclude_artists, exclude_genres, exclude_moods).
+- Erfinde nichts, was nicht in den Listen steht.
+- Antworte ausschließlich über das Werkzeug set_shuffle_filter.`;
 
 const FILTER_INSTRUCTIONS = `Du übersetzt einen gesprochenen deutschen Musikwunsch in Filter für einen Shuffle über die Lieblingssongs einer Person.
 Der Text stammt aus einer Spracherkennung und enthält oft falsch geschriebene Namen („Kraft Club“ = Kraftklub, „Billy Eilish“ = Billie Eilish).
@@ -88,6 +129,119 @@ englisch, klein geschrieben, vom Allgemeinen zum Speziellen, z. B. „rock“, �
 Nimm immer auch das Hauptgenre mit (bei „german hip hop“ zusätzlich „hip hop“; bei „indie rock“ zusätzlich „rock“).
 Kennst du einen Interpreten nicht sicher, gib eine leere Liste zurück. Rate nicht.
 Antworte ausschließlich über das Werkzeug set_artist_genres und gib für JEDE Nummer einen Eintrag zurück.`;
+
+/* ---------- Songs → Merkmale ---------- */
+const TRACK_TAG_TOOL = {
+  name: 'set_track_features',
+  description: 'Vergibt für jeden nummerierten Song seine Merkmale.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      songs: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            i: { type: 'integer', description: 'Nummer des Songs aus der Liste' },
+            g: { type: 'array', items: { type: 'string' }, description: '1–3 Genres, klein geschrieben, Hauptgenre zuerst' },
+            m: { type: 'array', items: { type: 'string', enum: MOODS }, description: '1–3 Stimmungen aus der festen Liste' },
+            e: { type: 'integer', description: 'Energie 1 (sehr ruhig) bis 5 (sehr energiegeladen)' },
+            l: { type: 'string', description: 'Gesangssprache als Kürzel (de, en, fr, es …) oder „instrumental“' },
+            y: { type: ['integer', 'null'], description: 'Erstveröffentlichung des Songs, nur wenn sicher bekannt und abweichend vom angegebenen Albumjahr; sonst null' },
+          },
+          required: ['i', 'g', 'm', 'e', 'l', 'y'],
+        },
+      },
+    },
+    required: ['songs'],
+  },
+};
+
+const TRACK_TAG_INSTRUCTIONS = `Vergib für jeden nummerierten Song seine Merkmale. Es geht um den einzelnen SONG, nicht um den Interpreten allgemein –
+eine Ballade einer Metal-Band ist ruhig, ein Partysong eines Liedermachers tanzbar.
+
+- g: 1–3 Genres im Stil von Spotify (englisch, klein geschrieben). Immer zuerst das Hauptgenre aus dieser Liste:
+  rock, pop, hip hop, electronic, metal, punk, indie, schlager, r&b, soul, funk, jazz, blues, classical, folk, country,
+  reggae, latin, singer-songwriter, soundtrack, ambient. Danach höchstens zwei genauere Genres (z. B. „german hip hop“, „indie rock“).
+- m: 1–3 Stimmungen, ausschließlich aus: ${MOODS.join(', ')}.
+- e: Energie 1 (sehr ruhig, z. B. Klavierballade) bis 5 (sehr energiegeladen, z. B. Metal, Techno, Partyhit).
+- l: Gesangssprache als Kürzel, „instrumental“ bei Stücken ohne Gesang.
+- y: Jahr der Erstveröffentlichung, nur wenn du es sicher weißt UND es vom angegebenen Albumjahr abweicht (Remaster, Best-of, Neuauflage). Sonst null.
+- „Last.fm“ hinter einem Song sind Schlagworte echter Hörer – nutze sie als starken Hinweis.
+- Kennst du einen Song nicht, schließe vorsichtig aus Interpret, Titel und Schlagworten.
+Antworte ausschließlich über das Werkzeug set_track_features und gib für JEDE Nummer einen Eintrag zurück.`;
+
+/* Last.fm-Schlagworte pro Song (z. B. „chill“, „party“, „melancholic“, „90s“). Parallel in kleinen Gruppen,
+ * um Last.fm nicht zu überlasten. Fehler werden ignoriert – dann entscheidet Claude allein. */
+async function lastfmTrackTags(env, tracks) {
+  const out = new Array(tracks.length).fill(null);
+  if (!env.LASTFM_API_KEY) return { tags: out, used: false };
+  let errors = 0;
+  for (let start = 0; start < tracks.length; start += 10) {
+    await Promise.all(tracks.slice(start, start + 10).map(async (t, k) => {
+      const u = new URL('https://ws.audioscrobbler.com/2.0/');
+      u.search = new URLSearchParams({
+        method: 'track.gettoptags', artist: t.a, track: t.t, autocorrect: '1', api_key: env.LASTFM_API_KEY, format: 'json',
+      });
+      try {
+        const r = await fetch(u, { headers: { 'User-Agent': 'SmartShuffle/1.0 (private Web-App)' } });
+        const d = await r.json();
+        if (d.error) { errors++; return; }
+        out[start + k] = (d.toptags?.tag || [])
+          .filter((x) => Number(x.count) >= 10)
+          .slice(0, 8)
+          .map((x) => String(x.name).toLowerCase().slice(0, 30));
+      } catch { errors++; }
+    }));
+  }
+  return { tags: out, used: true, errors };
+}
+
+async function tagTracks(env, body) {
+  const max = env.LASTFM_API_KEY ? TRACK_BATCH_LASTFM : TRACK_BATCH_KI;
+  const tracks = (Array.isArray(body.tracks) ? body.tracks : [])
+    .filter((t) => t && typeof t.a === 'string' && typeof t.t === 'string')
+    .slice(0, max)
+    .map((t) => ({ a: t.a.slice(0, 120), t: t.t.slice(0, 160), y: intOrNull(t.y, 1900, 2100) }));
+  if (!tracks.length) throw Object.assign(new Error('Keine Songs übermittelt'), { status: 400 });
+
+  const lf = await lastfmTrackTags(env, tracks);
+  const list = tracks.map((t, i) => {
+    const tags = lf.tags[i]?.length ? ` | Last.fm: ${lf.tags[i].join(', ')}` : '';
+    return `${i + 1}. ${t.a} – ${t.t}${t.y ? ` (Album ${t.y})` : ''}${tags}`;
+  }).join('\n');
+
+  const { input, usage } = await callClaude(env, {
+    system: [{ type: 'text', text: TRACK_TAG_INSTRUCTIONS, cache_control: { type: 'ephemeral' } }],
+    tool: TRACK_TAG_TOOL,
+    user: list,
+    maxTokens: 12000,
+  });
+
+  const moodSet = new Set(MOODS);
+  const result = new Array(tracks.length).fill(null);
+  for (const row of Array.isArray(input.songs) ? input.songs : []) {
+    const idx = Number(row.i) - 1;
+    if (!(idx >= 0 && idx < tracks.length)) continue;
+    const e = Number(row.e);
+    const lang = String(row.l || '').toLowerCase().trim();
+    let y = intOrNull(row.y, 1900, 2100);
+    if (y && tracks[idx].y && y >= tracks[idx].y) y = null;   // nur frühere Erstveröffentlichungen übernehmen
+    result[idx] = {
+      g: cleanStrings(row.g, 3, 40).map((g) => g.toLowerCase()),
+      m: cleanStrings(row.m, 3, 20).map((m) => m.toLowerCase()).filter((m) => moodSet.has(m)),
+      e: Number.isInteger(e) && e >= 1 && e <= 5 ? e : null,
+      l: /^([a-z]{2}|instrumental)$/.test(lang) ? lang : null,
+      y,
+    };
+  }
+  return {
+    tags: result,
+    lastfm: lf.used,
+    lastfmHits: lf.tags.filter((t) => t && t.length).length,
+    usage,
+  };
+}
 
 /* ---------- Neue Songs entdecken ---------- */
 const DISCOVER_TOOL = {
@@ -322,10 +476,12 @@ async function interpret(env, body) {
   if (!text) throw Object.assign(new Error('Kein Wunsch übermittelt'), { status: 400 });
   const artists = cleanStrings(body.artists, MAX_ARTISTS);
   const genres = cleanStrings(body.genres, MAX_GENRES, 80);
-  const library = `Interpretenliste (${artists.length}):\n${artists.join('\n')}\n\nGenreliste (${genres.length}):\n${genres.join('\n') || '(keine Genres bekannt)'}`;
+  const songTags = body.songTags === true;   // App hat Merkmale pro Song → strengere, genauere Auslegung
+  const library = `Interpretenliste (${artists.length}):\n${artists.join('\n')}\n\nGenreliste (${genres.length}):\n${genres.join('\n') || '(keine Genres bekannt)'}` +
+    (songTags ? `\n\nStimmungen: ${MOODS.join(', ')}` : '');
   const { input, usage } = await callClaude(env, {
     system: [
-      { type: 'text', text: FILTER_INSTRUCTIONS },
+      { type: 'text', text: songTags ? FILTER_INSTRUCTIONS_SONGS : FILTER_INSTRUCTIONS },
       { type: 'text', text: library, cache_control: { type: 'ephemeral' } }, // Bibliothek ändert sich selten → günstiger
     ],
     tool: FILTER_TOOL,
@@ -335,6 +491,10 @@ async function interpret(env, body) {
   let yearFrom = intOrNull(input.year_from, 1900, 2100);
   let yearTo = intOrNull(input.year_to, 1900, 2100);
   if (yearFrom && yearTo && yearFrom > yearTo) [yearFrom, yearTo] = [yearTo, yearFrom];
+  let eMin = intOrNull(input.energy_min, 1, 5), eMax = intOrNull(input.energy_max, 1, 5);
+  if (eMin && eMax && eMin > eMax) [eMin, eMax] = [eMax, eMin];
+  const moodSet = new Set(MOODS);
+  const moods = (v) => (Array.isArray(v) ? [...new Set(v.map((m) => String(m).toLowerCase()).filter((m) => moodSet.has(m)))] : []);
   return {
     filter: {
       include_artists: keepKnown(input.include_artists, artists),
@@ -342,6 +502,11 @@ async function interpret(env, body) {
       include_genres: keepKnown(input.include_genres, genres),
       exclude_genres: keepKnown(input.exclude_genres, genres),
       title_keywords: cleanStrings(input.title_keywords, 10, 60),
+      include_moods: songTags ? moods(input.include_moods) : [],
+      exclude_moods: songTags ? moods(input.exclude_moods) : [],
+      energy_min: songTags ? eMin : null,
+      energy_max: songTags ? eMax : null,
+      languages: songTags ? cleanStrings(input.languages, 5, 12).map((l) => l.toLowerCase()).filter((l) => /^([a-z]{2}|instrumental)$/.test(l)) : [],
       year_from: yearFrom,
       year_to: yearTo,
       count: intOrNull(input.count, 0, 100000),
@@ -393,7 +558,7 @@ export default {
       }, 200, { ...cors, 'Cache-Control': 'no-store' });
     }
 
-    const routes = { '/interpret': interpret, '/tag-artists': tagArtists, '/discover': discover };
+    const routes = { '/interpret': interpret, '/tag-artists': tagArtists, '/tag-tracks': tagTracks, '/discover': discover };
     const handler = routes[url.pathname];
     if (!handler || request.method !== 'POST') return json({ error: 'Nicht gefunden' }, 404, cors);
     if (!originOk) return json({ error: 'Diese Web-Adresse ist nicht freigegeben (ALLOWED_ORIGINS).' }, 403, cors);

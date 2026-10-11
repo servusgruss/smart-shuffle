@@ -113,7 +113,9 @@
     if (n) result.count = /^\d+$/.test(n[1]) ? Number(n[1]) : NUMBER_WORDS[n[1]] || null;
     if (/\balle[ns]?\b/.test(lower) && !n) result.count = Infinity;
     result.years = parseYears(lower);
-    for (const clause of lower.split(/,|;|\bund\b|\baber\b|\bsowie\b|\boder\b/)) {
+    // „was Ruhiges ohne Rap“ → „was Ruhiges“ | „ohne Rap“
+    const split = lower.replace(/\s(ohne|kein|keine|keinen|keinem|keiner|außer|ausser)\s/g, ', $1 ');
+    for (const clause of split.split(/,|;|\bund\b|\baber\b|\bsowie\b|\boder\b/)) {
       const negative = NEGATIVE.test(clause);
       const term = clause
         .replace(YEAR_WORDS, ' ')
@@ -200,18 +202,51 @@
     return { type: 'text', label: term, values: [t], fixed: false };
   }
 
-  function trackMatches(track, resolved, genresByArtist) {
+  /* Genre-Abgleich:
+   * exakt   – für KI-Filter (die KI wählt genau die Einträge der Liste)
+   * Wortfolge – für die Erkennung auf dem Gerät: „rock“ trifft „indie rock“, aber nicht „rockabilly“ */
+  function genreHit(genre, wanted, exact) {
+    const g = normalize(genre), v = normalize(wanted);
+    if (!g || !v) return false;
+    if (g === v) return true;
+    if (exact) return false;
+    return (' ' + g + ' ').includes(' ' + v + ' ');
+  }
+  /* songTags: Merkmale pro Song ({ g: Genres, m: Stimmungen, e: Energie, l: Sprache, y: Jahr }).
+   * Hat ein Song eigene Genres, zählen diese – sonst die Genres seiner Interpreten. */
+  function trackMatches(track, resolved, genresByArtist, songTags) {
     const vals = resolved.values;
     if (resolved.type === 'artist') return track.artists.some((a) => vals.includes(normalize(a.name)));
     if (resolved.type === 'genre') {
-      const gs = track.artists.flatMap((a) => (genresByArtist[a.id] || []).map(normalize));
-      return gs.some((g) => vals.some((v) => g.includes(normalize(v))));
+      const own = songTags && songTags[track.uri] && songTags[track.uri].g;
+      const gs = own && own.length ? own : track.artists.flatMap((a) => genresByArtist[a.id] || []);
+      return gs.some((g) => vals.some((v) => genreHit(g, v, resolved.exact)));
     }
     const hay = normalize([track.name, track.album, ...track.artists.map((a) => a.name)].join(' '));
     return vals.some((v) => hay.includes(v));
   }
 
-  const api = { normalize, levenshtein, koelner, loose, phonetic, parseQuery, buildIndex, resolveTerm, trackMatches, artistScore };
+  /* Stimmungswörter, die auch ohne KI erkannt werden („was Ruhiges“, „traurige Songs“). */
+  const MOODS = ['ruhig', 'entspannt', 'verträumt', 'melancholisch', 'traurig', 'romantisch', 'nachdenklich',
+    'fröhlich', 'energiegeladen', 'motivierend', 'tanzbar', 'partytauglich', 'aggressiv', 'düster', 'episch'];
+  const MOOD_WORDS = {
+    ruhig: ['ruhig'], chillig: ['entspannt', 'ruhig'], chill: ['entspannt', 'ruhig'], entspannt: ['entspannt'], gemütlich: ['entspannt', 'ruhig'],
+    traurig: ['traurig', 'melancholisch'], melancholisch: ['melancholisch'], romantisch: ['romantisch'], verträumt: ['verträumt'],
+    fröhlich: ['fröhlich'], gute: ['fröhlich'], energiegeladen: ['energiegeladen'], energisch: ['energiegeladen'],
+    motivierend: ['motivierend'], tanzbar: ['tanzbar'], party: ['partytauglich', 'tanzbar'], partytauglich: ['partytauglich'],
+    aggressiv: ['aggressiv'], düster: ['düster'], episch: ['episch'], nachdenklich: ['nachdenklich'],
+  };
+  const MOOD_LOOKUP = Object.fromEntries(Object.entries(MOOD_WORDS).map(([k, v]) => [normalize(k), v]));
+  function moodsOf(term) {
+    const out = new Set();
+    for (const w of normalize(term).split(' ')) {
+      const keys = [w, ...['es', 'en', 'em', 'er', 'e', 's'].filter((x) => w.endsWith(x)).map((x) => w.slice(0, -x.length))];
+      for (const key of keys) if (MOOD_LOOKUP[key]) MOOD_LOOKUP[key].forEach((m) => out.add(m));
+    }
+    return [...out];
+  }
+
+  const api = { normalize, levenshtein, koelner, loose, phonetic, parseQuery, buildIndex, resolveTerm, trackMatches, artistScore, genreHit, moodsOf, MOODS };
   root.Matcher = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

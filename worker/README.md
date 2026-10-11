@@ -3,7 +3,8 @@
 Kleiner Mittelsmann auf Cloudflare: nimmt Sprachwünsche aus der App entgegen, prüft den
 Spotify-Login und die Freigabeliste und fragt Claude (Haiku 5.5). Außerdem ordnet er einmalig
 alle Interpreten der Bibliothek ihren Genres zu (`/tag-artists`), weil Spotify das bei großen
-Bibliotheken nur sehr langsam liefert. Der API-Schlüssel liegt nur
+Bibliotheken nur sehr langsam liefert. Und er vergibt einmalig Merkmale pro Song (`/tag-tracks`):
+Genre, Stimmung, Energie, Sprache und Erstveröffentlichung – aus Last.fm-Schlagworten plus Claude. Der API-Schlüssel liegt nur
 hier als Secret, nie auf einem Handy und nie im Repo.
 
 ```
@@ -72,6 +73,8 @@ In der App steuern zwei Regler unter **Einstellungen → Neues entdecken**:
 - **Neue Songs:** pro Mix ein Claude-Aufruf (falls KI-Anteil > 0) und höchstens so viele Spotify-Suchen,
   wie in der App eingestellt
 - **Genre-Zuordnung:** einmalig pro Interpret, bei ~2.000 Interpreten grob ein paar Cent
+- **Song-Merkmale:** einmalig pro Song, in Paketen à 40 (mit Last.fm) bzw. 100 Songs. Bei ~5.000 Songs
+  grob einige Cent bis deutlich unter 1 € bei Anthropic; Last.fm kostenlos (eine Abfrage pro Song)
 - **Claude Haiku 5.5:** pro Sprachbefehl wird die Interpreten- und Genreliste mitgeschickt.
   Bei ~1.000 Interpreten grob ein Bruchteil eines Cents pro Befehl; die Liste wird zwischengespeichert
   (Prompt Caching), wiederholte Befehle kurz hintereinander sind günstiger.

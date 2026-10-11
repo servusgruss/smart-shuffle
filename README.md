@@ -23,6 +23,12 @@ App: `https://servusgruss.github.io/smart-shuffle/`
   „Smart Shuffle“ geschrieben (bei jedem Abspielen überschrieben) und von dort gestartet
 - **Merkt sich alles auf dem Gerät:** Login, Client ID, Bibliothek, Genres, Design und
   letzten Wunsch. Beim Öffnen werden nur neu gespeicherte Songs nachgeladen.
+- **Merkmale pro Song:** Mit KI-Server bekommt jeder Lieblingssong einmalig eigene Merkmale –
+  Genre, Stimmung (ruhig, tanzbar, melancholisch …), Energie 1–5, Gesangssprache und das Jahr der
+  Erstveröffentlichung. Quellen: Last.fm-Schlagworte echter Hörer plus Claude Haiku. Läuft im
+  Hintergrund, neueste Songs zuerst, gespeichert auf dem Gerät, verbraucht kein Spotify-Kontingent.
+  Damit filtert „ruhiger Rock“ nach Genre **und** Stimmung des einzelnen Songs statt nach ganzen
+  Interpreten, und „90er“ trifft auch Songs auf späteren Best-of-Alben.
 - **KI (optional):** versteht auch Stimmungen und Anlässe („was Ruhiges zum Kochen“) über einen
   eigenen Cloudflare Worker mit Claude – Einrichtung in [`worker/README.md`](worker/README.md).
   Ohne KI läuft die Erkennung komplett auf dem Gerät.
@@ -74,7 +80,7 @@ Mode sind auf wenige Nutzer begrenzt – für privaten Gebrauch reicht das.
 | `match.js` | Wunsch-Zerlegung und unscharfe Zuordnung zu Interpreten/Genres |
 | `config.js` | optionale Voreinstellungen (Client ID, KI-Adresse) |
 | `worker/` | KI-Worker für Cloudflare (eigene Anleitung) |
-| `test/` | Tests: Namenserkennung (`node test/match.test.js`), Worker (`node test/worker.test.mjs`, `node test/discover.test.mjs`) |
+| `test/` | Tests: Namenserkennung (`node test/match.test.js`), Worker (`node test/worker.test.mjs`, `node test/discover.test.mjs`, `node test/tracks.test.mjs`) |
 
 ## Erweiterbar
 Weitere Quellen (eigene Playlists, gespeicherte Alben) werden in `app.js` unter `SOURCES`
@@ -84,8 +90,9 @@ gemeinsame Playlists.
 ## Bekannte Grenzen
 - Spotify-eigene Mixe (Rock-Mix, Daily Mix …) sind für neue Apps seit Nov. 2024 gesperrt;
   „Neues entdecken“ ist der Ersatz.
-- Stimmungen erkennt die KI über Genres und bekannte Interpreten, nicht pro einzelnem Song
-  (Spotify gibt neuen Apps keine Audio-Merkmale mehr).
+- Song-Merkmale stammen von Last.fm und der KI, nicht aus der Audioanalyse (Spotify gibt neuen
+  Apps keine Audio-Merkmale mehr). Bei sehr unbekannten Songs schätzt die KI anhand von
+  Interpret und Titel. Stimmungsfilter berücksichtigen nur Songs, die schon Merkmale haben.
 
 - **Genres:** Mit KI-Server ordnet Claude einmalig alle Interpreten ihren Genres zu (Pakete à 150,
   gespeichert auf dem Gerät). Ohne KI fragt die App Spotify einzeln pro Interpret – Spotify bremst

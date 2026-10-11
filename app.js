@@ -422,6 +422,19 @@ const SOURCES = {
 let me = null;
 let tracks = [];
 let genres = store.get('genreCache') || {};
+/* Merkmale pro Song (uri → { g: Genres, m: Stimmungen, e: Energie 1–5, l: Sprache, y: Erstveröffentlichung }).
+ * Gehören zu Songs, nicht zu Personen – bleiben daher auch beim Abmelden erhalten. */
+let songTags = store.get('songTags') || {};
+const hasTags = (t) => { const x = songTags[t.uri]; return !!(x && (x.g?.length || x.m?.length || x.e)); };
+const yearOfTrack = (t) => songTags[t.uri]?.y || t.year;
+const matches = (t, r) => Matcher.trackMatches(t, r, genres, songTags);
+function songTagCoverage() {
+  if (!tracks.length) return 0;
+  let n = 0;
+  for (const t of tracks) if (hasTags(t)) n++;
+  return n / tracks.length;
+}
+const songMode = () => songTagCoverage() >= 0.6;   // ab 60 % getaggter Songs filtert die KI über Song-Merkmale
 let index = Matcher.buildIndex([], genres);
 let queue = [];
 let syncing = false;
@@ -443,6 +456,7 @@ function loadCachedLibrary() {
   tracks = lib?.tracks ? lib.tracks.map(unpack) : [];
   index = Matcher.buildIndex(tracks, genres);
   if (tracks.length) check('tracks', 'ok', `${tracks.length} Songs aus dem Gerätespeicher`);
+  renderSongTagStatus();
   setLibStatus();
 }
 
@@ -571,7 +585,62 @@ async function tagGenresWithKi() {
     genreRun = false;
   }
 }
-const loadGenres = () => (kiUrl() ? tagGenresWithKi() : loadMissingGenres());
+/* Merkmale pro Song über die KI (mit Last.fm-Schlagworten): einmalig je Song, in Paketen, im Hintergrund.
+ * Neueste Songs zuerst. Jedes Paket wird sofort gespeichert – ein Abbruch kostet nichts, es geht beim
+ * nächsten Öffnen an derselben Stelle weiter. Verbraucht kein Spotify-Kontingent. */
+let songTagRun = false;
+async function tagTracksWithKi() {
+  const url = kiUrl();
+  if (!url || songTagRun || !tracks.length) return;
+  const todo = tracks.filter((t) => !(t.uri in songTags));
+  if (!todo.length) { renderSongTagStatus(); return; }
+  songTagRun = true;
+  let done = 0, failed = false;
+  const total = todo.length;
+  try {
+    while (todo.length) {
+      if (Date.now() < (store.get('blockedUntil') || 0)) break;          // Spotify bremst → Login-Prüfung im Worker ginge nicht
+      const size = store.get('lastfmOn') === false ? 100 : 40;
+      const batch = todo.splice(0, size);
+      check('songtags', 'wait', `${(tracks.length - todo.length - batch.length).toLocaleString('de-DE')} von ${tracks.length.toLocaleString('de-DE')} Songs …`);
+      const res = await fetch(url + '/tag-tracks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (await getAccessToken()) },
+        body: JSON.stringify({ tracks: batch.map((t) => ({ a: t.artists.map((a) => a.name).join(', '), t: t.name, y: t.year || null })) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      store.set('lastfmOn', !!data.lastfm);
+      batch.forEach((t, i) => {
+        const x = data.tags?.[i];
+        songTags[t.uri] = x ? Object.fromEntries(Object.entries(x).filter(([, v]) => v !== null && !(Array.isArray(v) && !v.length))) : {};
+      });
+      done += batch.length;
+      if (!store.set('songTags', songTags)) { failed = true; check('songtags', 'fail', 'Gerätespeicher voll'); break; }
+      await sleep(300);
+    }
+    if (!failed) renderSongTagStatus();
+    if (done) {
+      log(`Song-Merkmale: ${done} Songs ergänzt.`);
+      if (!busy) makeShuffle();
+    }
+  } catch (e) {
+    check('songtags', 'fail', `${done.toLocaleString('de-DE')} von ${total.toLocaleString('de-DE')} ergänzt, dann Fehler: ${e.message}. Geht beim nächsten Öffnen weiter.`);
+  } finally {
+    songTagRun = false;
+  }
+}
+function renderSongTagStatus() {
+  if (!tracks.length) return;
+  const n = tracks.filter((t) => t.uri in songTags).length;
+  check('songtags', n >= tracks.length ? 'ok' : '', `${Math.round(songTagCoverage() * 100)} % der Songs mit Merkmalen` +
+    (store.get('lastfmOn') ? ' · mit Last.fm' : store.get('lastfmOn') === false ? ' · ohne Last.fm' : ''));
+}
+const loadGenres = async () => {
+  if (!kiUrl()) return loadMissingGenres();
+  await tagGenresWithKi();
+  tagTracksWithKi();
+};
 
 /* ---------- Kriterien ---------- */
 const chipCount = () => (settings.count === 'all' ? Infinity : Number(settings.count));
@@ -582,7 +651,7 @@ function kiCriteria() {
   if (!ki || ki.query !== $('query').value.trim()) return null;
   const f = ki.filter;
   const artist = (name) => ({ type: 'artist', label: name, values: [Matcher.normalize(name)], fixed: false, term: name });
-  const genre = (g) => ({ type: 'genre', label: g, values: [g], fixed: false, term: g });
+  const genre = (g) => ({ type: 'genre', label: g, values: [g], fixed: false, term: g, exact: !!ki.songMode });
   const text = (w) => ({ type: 'text', label: w, values: [Matcher.normalize(w)], fixed: false, term: w });
   return {
     fromKi: true,
@@ -592,18 +661,36 @@ function kiCriteria() {
     countFromVoice: f.count !== null && f.count !== undefined,
     include: [...f.include_artists.map(artist), ...f.include_genres.map(genre), ...(f.title_keywords || []).map(text)],
     exclude: [...f.exclude_artists.map(artist), ...f.exclude_genres.map(genre)],
+    moods: f.include_moods || [],
+    exMoods: f.exclude_moods || [],
+    energy: f.energy_min || f.energy_max ? { min: f.energy_min || null, max: f.energy_max || null } : null,
+    langs: f.languages || [],
   };
 }
 function currentCriteria() {
   const fromKi = kiCriteria();
   if (fromKi) return fromKi;
   const q = Matcher.parseQuery($('query').value);
+  // Stimmungswörter („was Ruhiges“) werden mit Song-Merkmalen zu einem Stimmungsfilter statt zu einer Titelsuche
+  const useMoods = songTagCoverage() > 0.2;
+  const moods = new Set(), exMoods = new Set();
+  const split = (terms, target) => terms.filter((t) => {
+    const m = useMoods ? Matcher.moodsOf(t) : [];
+    if (!m.length) return true;
+    m.forEach((x) => target.add(x));
+    return false;
+  });
+  const inc = split(q.include, moods), exc = split(q.exclude, exMoods);
   return {
     count: q.count || chipCount(),
     countFromVoice: !!q.count,
     years: q.years,
-    include: q.include.map((t) => ({ term: t, ...Matcher.resolveTerm(t, index) })),
-    exclude: q.exclude.map((t) => ({ term: t, ...Matcher.resolveTerm(t, index) })),
+    include: inc.map((t) => ({ term: t, ...Matcher.resolveTerm(t, index) })),
+    exclude: exc.map((t) => ({ term: t, ...Matcher.resolveTerm(t, index) })),
+    moods: [...moods],
+    exMoods: [...exMoods],
+    energy: null,
+    langs: [],
   };
 }
 
@@ -616,17 +703,21 @@ function libraryForKi() {
   const freq = new Map();
   for (const t of tracks) for (const a of t.artists) freq.set(a.name, (freq.get(a.name) || 0) + 1);
   const artists = [...freq.keys()].sort((a, b) => freq.get(b) - freq.get(a)).slice(0, 2500);
+  // Genres nach Häufigkeit: zuerst die der Songs, dann die der Interpreten
+  const gfreq = new Map();
+  const add = (g) => gfreq.set(g, (gfreq.get(g) || 0) + 1);
+  for (const t of tracks) (songTags[t.uri]?.g || []).forEach(add);
   const ids = new Set(tracks.flatMap((t) => t.artists.map((a) => a.id)));
-  const gs = new Set();
-  for (const id of ids) for (const g of genres[id] || []) gs.add(g);
-  return { artists, genres: [...gs].slice(0, 800) };
+  for (const id of ids) for (const g of genres[id] || []) if (!gfreq.has(g)) gfreq.set(g, 0);
+  const gs = [...gfreq.keys()].sort((a, b) => gfreq.get(b) - gfreq.get(a));
+  return { artists, genres: gs.slice(0, 1200), songTags: songMode() };
 }
 let kiBusy = false;
 /* Fragt die KI, wenn ein Server eingetragen ist; sonst (oder bei Fehlern) bleibt die Erkennung auf dem Gerät. */
 async function interpretWithKi(text) {
   const url = kiUrl();
   if (!url || !text || !tracks.length || kiBusy) return false;
-  if (settings.ki && settings.ki.query === text) return true;
+  if (!needsKi(text)) return true;
   kiBusy = true;
   $('parsed').classList.add('busy');
   toast('KI versteht deinen Wunsch …');
@@ -638,7 +729,7 @@ async function interpretWithKi(text) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    settings.ki = { query: text, filter: data.filter };
+    settings.ki = { query: text, filter: data.filter, songMode: songMode() };
     saveSettings();
     check('ki', 'ok', 'zuletzt: ' + (data.filter.summary || 'verstanden'));
     if (data.usage) log(`KI: ${data.usage.input} Tokens rein (${data.usage.cached} aus Cache), ${data.usage.output} raus.`);
@@ -678,7 +769,10 @@ function endBusy() {
   $('query').readOnly = false;
   $('micBtn').disabled = false;
 }
-function needsKi(text) { return !!(text && kiUrl() && tracks.length && !(settings.ki && settings.ki.query === text)); }
+function needsKi(text) {
+  // neu fragen bei neuem Wunsch – oder wenn inzwischen Song-Merkmale da sind und der alte Filter noch ohne entstand
+  return !!(text && kiUrl() && tracks.length && !(settings.ki && settings.ki.query === text && !!settings.ki.songMode === songMode()));
+}
 function needsDiscovery() {
   return !!(Number(settings.discoverCount) && kiUrl() && tracks.length
     && store.get('discovered')?.sig !== discoverySig() && Date.now() >= (store.get('blockedUntil') || 0));
@@ -783,7 +877,7 @@ async function discoverNew(force = false, startFrac = 0.1) {
         if (!hit || libUris.has(hit.u)) continue;
         const t = unpack(hit);
         if (c.years && !(t.year && t.year >= c.years.from && t.year <= c.years.to)) continue;
-        if (c.exclude.some((r) => Matcher.trackMatches(t, r, genres))) continue;
+        if (c.exclude.some((r) => matches(t, r))) continue;
         foundKeys.add(k);
         found.push({ ...hit, src });
         got++;
@@ -867,6 +961,13 @@ function showParsed() {
   if (c.years) parts.push(`<span class="tag">${c.years.from === c.years.to ? c.years.from : c.years.from + '–' + c.years.to}</span>`);
   if (c.countFromVoice) parts.push(`<span class="tag">${c.count === Infinity ? 'Alle' : 'Letzte ' + c.count}</span>`);
   parts.push(...c.include.map((r) => tag(r, false)), ...c.exclude.map((r) => tag(r, true)));
+  (c.moods || []).forEach((m) => parts.push(`<span class="tag mood">${escapeHtml(m)}</span>`));
+  (c.exMoods || []).forEach((m) => parts.push(`<span class="tag mood out">${escapeHtml(m)}</span>`));
+  if (c.energy) {
+    const { min, max } = c.energy;
+    parts.push(`<span class="tag mood">Energie ${min && max ? (min === max ? min : min + '–' + max) : min ? 'ab ' + min : 'bis ' + max}</span>`);
+  }
+  if (c.langs?.length) parts.push(`<span class="tag">Sprache: ${escapeHtml(c.langs.join(', '))}</span>`);
   $('parsed').innerHTML = parts.join('');
 }
 function renderChips() {
@@ -898,9 +999,22 @@ function spreadArtists(list) {
 }
 function poolFor(c) {
   let pool = tracks.slice(0, c.count);
-  if (c.years) pool = pool.filter((t) => t.year && t.year >= c.years.from && t.year <= c.years.to);
-  if (c.include.length) pool = pool.filter((t) => c.include.some((r) => Matcher.trackMatches(t, r, genres)));
-  if (c.exclude.length) pool = pool.filter((t) => !c.exclude.some((r) => Matcher.trackMatches(t, r, genres)));
+  if (c.years) pool = pool.filter((t) => { const y = yearOfTrack(t); return y && y >= c.years.from && y <= c.years.to; });
+  if (c.include.length) pool = pool.filter((t) => c.include.some((r) => matches(t, r)));
+  if (c.exclude.length) pool = pool.filter((t) => !c.exclude.some((r) => matches(t, r)));
+  // Stimmung, Energie, Sprache: nur über Song-Merkmale – Songs ohne Merkmale fallen dann heraus
+  const moods = c.moods || [], exMoods = c.exMoods || [], langs = c.langs || [], en = c.energy;
+  if (moods.length || exMoods.length || langs.length || en) {
+    pool = pool.filter((t) => {
+      const x = songTags[t.uri];
+      if (!x) return !(moods.length || langs.length || en);       // reine Ausschlüsse lassen unbekannte Songs drin
+      if (moods.length && !moods.some((m) => x.m?.includes(m))) return false;
+      if (exMoods.length && exMoods.some((m) => x.m?.includes(m))) return false;
+      if (langs.length && !langs.includes(x.l)) return false;
+      if (en && !(x.e && (!en.min || x.e >= en.min) && (!en.max || x.e <= en.max))) return false;
+      return true;
+    });
+  }
   return pool;
 }
 /* Neue Songs gleichmäßig zwischen die eigenen verteilen statt alle ans Ende. */

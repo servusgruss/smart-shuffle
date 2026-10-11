@@ -249,3 +249,5 @@ code.copy {
 .progress-track span { display: block; height: 100%; width: 5%; background: var(--accent); border-radius: inherit; transition: width .35s ease; }
 @media (prefers-reduced-motion: reduce) { .progress-track span { transition: none; } }
 .link-btn.is-hidden { visibility: hidden; }
+
+.tag.mood { background: transparent; border: 1px solid var(--line); }
