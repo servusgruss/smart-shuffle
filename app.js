@@ -758,15 +758,13 @@ function beginBusy(text) {
   busy = true;
   clearTimeout(busyGuard);
   busyGuard = setTimeout(() => { if (busy) { log('Suche dauert zu lange – zeige bisheriges Ergebnis.'); endBusy(); makeShuffle(); } }, 60000);
-  $('query').readOnly = true;
-  $('micBtn').disabled = true;
+  if (!speechKeyboardMode) $('micBtn').disabled = true;   // Eingabefeld bleibt frei – sonst kann das Tastatur-Diktat nichts eintragen
   setProgress(text, 0.08);
   renderQueue();
 }
 function endBusy() {
   busy = false;
   clearTimeout(busyGuard);
-  $('query').readOnly = false;
   $('micBtn').disabled = false;
 }
 function needsKi(text) {
@@ -789,8 +787,12 @@ async function runSearch({ text = $('query').value.trim(), forceDiscover = false
     endBusy();
     makeShuffle();
   }
+  // Wurde der Wunsch während der Suche geändert und bestätigt, gleich mit dem neuen weitermachen
+  if (pendingQuery !== null) { const next = pendingQuery; pendingQuery = null; if (next !== text) runSearch({ text: next }); }
 }
+let pendingQuery = null;
 async function commitQuery() {
+  if (busy) { settings.query = $('query').value.trim(); saveSettings(); pendingQuery = settings.query; return; }
   settings.query = $('query').value.trim();
   saveSettings();
   await runSearch();
@@ -1209,6 +1211,7 @@ async function play(forceAsk = false, note = '') {
  * WebKit-Bug 225298). Der Mikrofon-Knopf öffnet dann das Eingabefeld mit Tastatur, und man spricht über
  * die Diktiertaste der iPhone-Tastatur. Beim Schließen der Tastatur wird der Wunsch wie gewohnt übernommen.
  */
+let speechKeyboardMode = false;
 function useKeyboardDictation(reason) {
   const q = $('query');
   q.focus();
@@ -1219,7 +1222,12 @@ function useKeyboardDictation(reason) {
 function setupSpeech() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const keyboardMode = () => !SR || isStandalone() || store.get('speechBlocked') === true;
+  // Antippen des Mikrofons soll das Eingabefeld nicht verlassen – sonst startet vorzeitig die Suche
+  const keepFocus = (e) => { if (speechKeyboardMode && document.activeElement === $('query')) e.preventDefault(); };
+  $('micBtn').addEventListener('pointerdown', keepFocus);
+  $('micBtn').addEventListener('mousedown', keepFocus);
   if (keyboardMode()) {
+    speechKeyboardMode = true;
     check('speech', '', isStandalone() ? 'Home-Bildschirm-App: Diktat über die Tastatur' : 'Diktat über die Tastatur');
     $('micBtn').addEventListener('click', () => useKeyboardDictation());
     return;
@@ -1250,6 +1258,7 @@ function setupSpeech() {
     if (ev.error === 'service-not-allowed') {
       // Siri/Diktierfunktion aus oder Umgebung ohne Spracherkennung → auf Tastatur-Diktat umstellen
       store.set('speechBlocked', true);
+      speechKeyboardMode = true;
       check('speech', 'fail', 'Spracherkennung vom System nicht erlaubt – ab jetzt Diktat über die Tastatur');
       toast('iOS erlaubt hier keine Spracherkennung. Tippe nochmal aufs Mikrofon und nutze die Diktiertaste der Tastatur. Falls die fehlt: Einstellungen → Allgemein → Tastatur → Diktierfunktion aktivieren.', true);
       return;
