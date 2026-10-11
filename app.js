@@ -250,6 +250,7 @@ const hasScope = (s) => (store.get('token')?.scope || '').split(' ').includes(s)
 function clearUserData() {
   Object.keys(SOURCES).forEach((s) => { store.del('lib:' + s); store.del('partial:' + s); });
   store.del('playlistId');
+  store.del('queueOrder');
   store.del('me');
   settings.query = '';
   settings.ki = null;
@@ -757,7 +758,7 @@ function setProgress(text, frac) {
 function beginBusy(text) {
   busy = true;
   clearTimeout(busyGuard);
-  busyGuard = setTimeout(() => { if (busy) { log('Suche dauert zu lange – zeige bisheriges Ergebnis.'); endBusy(); makeShuffle(); } }, 60000);
+  busyGuard = setTimeout(() => { if (busy) { log('Suche dauert zu lange – zeige bisheriges Ergebnis.'); endBusy(); makeShuffle({ reshuffle: true }); } }, 60000);
   if (!speechKeyboardMode) $('micBtn').disabled = true;   // Eingabefeld bleibt frei – sonst kann das Tastatur-Diktat nichts eintragen
   setProgress(text, 0.08);
   renderQueue();
@@ -771,9 +772,10 @@ function needsKi(text) {
   // neu fragen bei neuem Wunsch – oder wenn inzwischen Song-Merkmale da sind und der alte Filter noch ohne entstand
   return !!(text && kiUrl() && tracks.length && !(settings.ki && settings.ki.query === text && !!settings.ki.songMode === songMode()));
 }
+const discoveryDone = () => { const d = store.get('discovered'); return !!(d && d.sig === discoverySig() && !d.empty); };
 function needsDiscovery() {
   return !!(Number(settings.discoverCount) && kiUrl() && tracks.length
-    && store.get('discovered')?.sig !== discoverySig() && Date.now() >= (store.get('blockedUntil') || 0));
+    && !discoveryDone() && Date.now() >= (store.get('blockedUntil') || 0));
 }
 async function runSearch({ text = $('query').value.trim(), forceDiscover = false } = {}) {
   const ki = needsKi(text), disc = forceDiscover || needsDiscovery();
@@ -785,7 +787,7 @@ async function runSearch({ text = $('query').value.trim(), forceDiscover = false
     if (disc || needsDiscovery()) await discoverNew(forceDiscover, ki ? 0.3 : 0.1);
   } finally {
     endBusy();
-    makeShuffle();
+    makeShuffle({ reshuffle: true });
   }
   // Wurde der Wunsch während der Suche geändert und bestätigt, gleich mit dem neuen weitermachen
   if (pendingQuery !== null) { const next = pendingQuery; pendingQuery = null; if (next !== text) runSearch({ text: next }); }
@@ -837,9 +839,9 @@ async function searchTrack(cand) {
 async function discoverNew(force = false, startFrac = 0.1) {
   const n = Number(settings.discoverCount) || 0;
   if (!n || !kiUrl() || !tracks.length || discovering) return false;
-  if (Date.now() < (store.get('blockedUntil') || 0)) return false;
+  if (Date.now() < (store.get('blockedUntil') || 0)) { toast('Spotify bremst gerade – neue Songs beim nächsten Wunsch.', true); return false; }
   const sig = discoverySig();
-  if (!force && store.get('discovered')?.sig === sig) return false;
+  if (!force && discoveryDone()) return false;    // ein leeres Ergebnis zählt nicht als erledigt
   discovering = true;
   $('discoverBtn').disabled = true;
   check('discover', 'wait', 'suche Vorschläge …');
@@ -862,7 +864,8 @@ async function discoverNew(force = false, startFrac = 0.1) {
     const libKeys = new Set(tracks.map((t) => keyOf(t.artists[0]?.name || '', t.name)));
     const found = [], foundKeys = new Set();
     let searches = 0, cached = 0;
-    const take = async (list, want, src) => {
+    // offline: nur bereits gemerkte Treffer nutzen (kostet nichts) – online: auch neu suchen
+    const take = async (list, want, src, offline) => {
       let got = 0;
       for (const cand of list) {
         if (got >= want || found.length >= n) break;
@@ -870,6 +873,7 @@ async function discoverNew(force = false, startFrac = 0.1) {
         if (libKeys.has(k) || foundKeys.has(k)) continue;
         let hit = cache[k];
         if (hit === undefined) {
+          if (offline) continue;
           if (searches >= n) break;                       // Spotify-Budget für diesen Mix erschöpft
           searches++;
           setProgress(`Neue Songs werden gesucht … ${found.length} von ${n} gefunden`, startFrac + (1 - startFrac) * Math.min(1, searches / n));
@@ -878,31 +882,36 @@ async function discoverNew(force = false, startFrac = 0.1) {
         } else cached++;
         if (!hit || libUris.has(hit.u)) continue;
         const t = unpack(hit);
-        if (c.years && !(t.year && t.year >= c.years.from && t.year <= c.years.to)) continue;
+        // Jahrzehnt: die KI kennt den Wunsch schon; bei Last.fm nur deutlich ältere Songs aussortieren –
+        // spätere Albumjahre sind oft Remaster oder Best-of-Alben
+        if (c.years && src === 'lastfm' && t.year && t.year < c.years.from) continue;
         if (c.exclude.some((r) => matches(t, r))) continue;
         foundKeys.add(k);
         found.push({ ...hit, src });
         got++;
       }
     };
-    await take(data.lastfm || [], data.wantLast, 'lastfm');
-    await take(data.ki || [], n - found.length, 'ki');
-    if (found.length < n && Number(settings.kiShare) < 100) await take(data.lastfm || [], n - found.length, 'lastfm');
+    await take(data.lastfm || [], data.wantLast, 'lastfm', true);              // erst gemerkte Treffer …
+    await take(data.ki || [], n - found.length, 'ki', true);
+    await take(data.lastfm || [], data.wantLast - found.filter((t) => t.src === 'lastfm').length, 'lastfm', false);   // … dann suchen
+    await take(data.ki || [], n - found.length, 'ki', false);
+    if (found.length < n && Number(settings.kiShare) < 100) await take(data.lastfm || [], n - found.length, 'lastfm', false);
 
     const keys = Object.keys(cache);                       // Merkliste begrenzen
     if (keys.length > 3000) keys.slice(0, keys.length - 3000).forEach((k) => delete cache[k]);
     store.set('discoverCache', cache);
-    store.set('discovered', { sig, tracks: found });
+    store.set('discovered', { sig, tracks: found, empty: !found.length });
     const fromLast = found.filter((t) => t.src === 'lastfm').length;
     const detail = `${found.length} neue Songs (${fromLast} Last.fm, ${found.length - fromLast} KI) · ${searches} Spotify-Suchen` +
       (cached ? `, ${cached} aus dem Speicher` : '') + (data.notes?.length ? ' · ' + data.notes.join(' / ') : '');
     check('discover', found.length ? 'ok' : 'fail', detail);
     log('Entdecken: ' + detail);
     if (found.length) toast(`${found.length} neue Songs eingemischt.`);
+    else toast('Keine passenden neuen Songs gefunden' + (data.notes?.length ? ': ' + data.notes[0] : ' – beim nächsten Wunsch neuer Versuch.'), true);
     return true;
   } catch (e) {
     check('discover', 'fail', e.message);
-    if (e.status === 429) toast('Spotify bremst – neue Songs später.', true);
+    toast(e.status === 429 ? 'Spotify bremst – neue Songs später.' : 'Neue Songs gerade nicht möglich: ' + e.message, true);
     return false;
   } finally {
     discovering = false;
@@ -1032,12 +1041,24 @@ function mergeNew(own, fresh) {
   }
   return out;
 }
-function makeShuffle() {
+/* Die Reihenfolge bleibt stehen, bis du selbst etwas änderst (neuer Wunsch, „Neu mischen“, Umfang,
+ * „Neue Vorschläge“). Hintergrundaufgaben – Merkmale fertig, Bibliothek abgeglichen, App wieder
+ * geöffnet – zeigen dieselbe Reihenfolge weiter an, auch nach einem Neustart. */
+const queueSig = () => JSON.stringify([discoverySig(), settings.count, settings.source, Number(settings.discoverCount) > 0]);
+function makeShuffle(opts = {}) {
   showParsed();
   const c = currentCriteria();
   const pool = poolFor(c);
   const fresh = currentDiscoveries();
-  queue = mergeNew(spreadArtists(pool), fresh);
+  const saved = store.get('queueOrder');
+  let kept = null;
+  if (!opts.reshuffle && saved && saved.sig === queueSig() && saved.uris?.length) {
+    const byUri = new Map([...pool, ...fresh].map((t) => [t.uri, t]));
+    kept = saved.uris.map((u) => byUri.get(u)).filter(Boolean);
+    if (!kept.length) kept = null;
+  }
+  queue = kept || mergeNew(spreadArtists(pool), fresh);
+  if (!kept && !busy) store.set('queueOrder', { sig: queueSig(), uris: queue.map((t) => t.uri) });
   renderQueue();
   $('playBtn').disabled = busy || !queue.length;
   $('shuffleBtn').disabled = busy || !tracks.length;
@@ -1045,7 +1066,7 @@ function makeShuffle() {
   if (tracks.length && !queue.length) {
     const genreWanted = c.include.some((r) => r.type === 'genre');
     toast(genreWanted && genreRun ? 'Keine Treffer – Genres werden noch geladen.' : 'Keine Songs passen zu diesem Wunsch.', true);
-  } else if ($('toast').classList.contains('bad')) toast('');
+  } else if (/^Keine (Songs passen|Treffer)/.test($('toast').textContent)) toast('');
 }
 function renderQueue() {
   $('progress').hidden = !busy;
@@ -1312,7 +1333,9 @@ async function loadProfile() {
 }
 
 /* ---------- Start ---------- */
+let hadOrderAtStart = false;   // gab es beim Öffnen schon eine Reihenfolge für den aktuellen Wunsch?
 async function init() {
+  hadOrderAtStart = store.get('queueOrder')?.sig === queueSig();
   renderThemePicker();
   applyTheme(settings.theme);
   renderChips();
@@ -1332,7 +1355,7 @@ async function init() {
   $('settingsBtn').addEventListener('click', () => { renderSpotifyStatus(); $('settings').showModal(); });
   $('closeSettings').addEventListener('click', () => $('settings').close());
   $('settings').addEventListener('click', (e) => { if (e.target === $('settings')) $('settings').close(); });
-  $('shuffleBtn').addEventListener('click', makeShuffle);
+  $('shuffleBtn').addEventListener('click', () => makeShuffle({ reshuffle: true }));
   $('playBtn').addEventListener('click', () => play());
   $('deviceBtn').addEventListener('click', async () => { try { await resolveDevice(true); } catch (e) { toast(e.message, true); } });
   renderDevice();
@@ -1396,7 +1419,9 @@ async function startOnline() {
   if (await loadProfile()) {
     await syncLibrary(false);
     if (!syncing) loadGenres();
-    await runSearch();     // nur, wenn KI-Auswertung oder Vorschläge für den aktuellen Wunsch noch fehlen
+    // Nur suchen, wenn es für den aktuellen Wunsch noch keine Reihenfolge gibt – eine laufende
+    // Wiedergabe soll beim erneuten Öffnen nicht umgemischt werden.
+    if (!hadOrderAtStart) await runSearch(); else makeShuffle();
   }
 }
 

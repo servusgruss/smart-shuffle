@@ -19,6 +19,8 @@ App: `https://servusgruss.github.io/smart-shuffle/`
   Jahrzehnt/Jahr („90er“, „aus den 2000ern“, „von 1995“ – nach Erscheinungsjahr des Albums)
 - **Umfang:** Letzte 10 / 50 / 100 / 250 / Alle Lieblingssongs
 - **Smart Shuffle:** derselbe Interpret frühestens nach 3 anderen Songs wieder
+- **Reihenfolge bleibt stehen**, bis du selbst etwas änderst (neuer Wunsch, „Neu mischen“, Umfang,
+  „Neue Vorschläge“) – auch nach dem erneuten Öffnen der App
 - **Abspielen ohne Längenlimit:** die Reihenfolge wird in eine eigene private Playlist
   „Smart Shuffle“ geschrieben (bei jedem Abspielen überschrieben) und von dort gestartet
 - **Merkt sich alles auf dem Gerät:** Login, Client ID, Bibliothek, Genres, Design und
